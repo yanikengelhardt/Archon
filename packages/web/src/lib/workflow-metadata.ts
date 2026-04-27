@@ -107,7 +107,13 @@ export function getWorkflowDisplayName(name: string): string {
 }
 
 /** Workflow category for filtering. */
-export type WorkflowCategory = 'All' | 'CI/CD' | 'Code Review' | 'Automation' | 'Development';
+export type WorkflowCategory =
+  | 'All'
+  | 'CI/CD'
+  | 'Code Review'
+  | 'Automation'
+  | 'Development'
+  | 'Other';
 
 export const CATEGORIES: WorkflowCategory[] = [
   'All',
@@ -115,6 +121,7 @@ export const CATEGORIES: WorkflowCategory[] = [
   'Code Review',
   'Automation',
   'Development',
+  'Other',
 ];
 
 /**
@@ -158,7 +165,7 @@ export function getWorkflowCategory(name: string, description: string): Workflow
     return 'Development';
   }
 
-  return 'Development';
+  return 'Other';
 }
 
 /**
