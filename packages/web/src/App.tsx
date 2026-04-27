@@ -105,7 +105,8 @@ export function App(): React.ReactElement {
               >
                 {/* Land on /legacy/chat (not /legacy) so the TopNav Chat tab highlights. */}
                 <Route index element={<Navigate to="chat" replace />} />
-                <Route path="hub" element={<HubPage />} />
+                <Route path="stats" element={<HubPage />} />
+                <Route path="hub" element={<Navigate to="/legacy/stats" replace />} />
                 <Route path="chat" element={<ChatPage />} />
                 <Route path="chat/*" element={<ChatPage />} />
                 <Route path="dashboard" element={<DashboardPage />} />

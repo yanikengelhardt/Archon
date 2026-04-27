@@ -567,7 +567,7 @@ export function HubPage(): ReactElement {
         <div className="mx-auto flex max-w-[1500px] flex-col gap-4">
           <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-end">
             <div>
-              <h1 className="text-2xl font-semibold text-text-primary">Hub</h1>
+              <h1 className="text-2xl font-semibold text-text-primary">Stats</h1>
               <p className="mt-1 text-sm text-text-tertiary">
                 Claude and Codex usage, latest chats, and launch controls in one view.
               </p>
