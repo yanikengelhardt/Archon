@@ -558,6 +558,73 @@ export class SqliteAdapter implements IDatabase {
         PRIMARY KEY (workflow_name, node_id, scope_key, provider)
       );
 
+      -- Agent usage analytics tables
+      CREATE TABLE IF NOT EXISTS remote_agent_agent_sessions (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        agent TEXT NOT NULL CHECK (agent IN ('claude', 'codex')),
+        provider_session_id TEXT NOT NULL,
+        source_file TEXT NOT NULL,
+        cwd TEXT,
+        model TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        last_activity_at TEXT NOT NULL,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        raw_event TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(agent, provider_session_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS remote_agent_agent_tool_calls (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        agent TEXT NOT NULL CHECK (agent IN ('claude', 'codex')),
+        provider_session_id TEXT NOT NULL,
+        tool_call_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        status TEXT,
+        started_at TEXT NOT NULL,
+        source_file TEXT NOT NULL,
+        source_line INTEGER NOT NULL,
+        raw_event TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(agent, source_file, source_line, tool_call_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS remote_agent_agent_token_usage (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        agent TEXT NOT NULL CHECK (agent IN ('claude', 'codex')),
+        provider_session_id TEXT NOT NULL,
+        model TEXT,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL,
+        event_at TEXT NOT NULL,
+        source_file TEXT NOT NULL,
+        source_line INTEGER NOT NULL,
+        raw_event TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(agent, source_file, source_line)
+      );
+
+      CREATE TABLE IF NOT EXISTS remote_agent_agent_user_messages (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        agent TEXT NOT NULL CHECK (agent IN ('claude', 'codex')),
+        provider_session_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        source_file TEXT NOT NULL,
+        source_line INTEGER NOT NULL,
+        raw_event TEXT,
+        inserted_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(agent, source_file, source_line, message_id)
+      );
+
       -- Indexes
       CREATE INDEX IF NOT EXISTS idx_codebase_env_vars_codebase_id ON remote_agent_codebase_env_vars(codebase_id);
       CREATE INDEX IF NOT EXISTS idx_conversations_platform ON remote_agent_conversations(platform_type, platform_conversation_id);
@@ -590,6 +657,22 @@ export class SqliteAdapter implements IDatabase {
         ON remote_agent_sessions(parent_session_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_conversation_started
         ON remote_agent_sessions(conversation_id, started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_sessions_activity
+        ON remote_agent_agent_sessions(last_activity_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent
+        ON remote_agent_agent_sessions(agent);
+      CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_session
+        ON remote_agent_agent_tool_calls(agent, provider_session_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_started
+        ON remote_agent_agent_tool_calls(started_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_token_usage_event
+        ON remote_agent_agent_token_usage(event_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_token_usage_session
+        ON remote_agent_agent_token_usage(agent, provider_session_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_user_messages_session
+        ON remote_agent_agent_user_messages(agent, provider_session_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_user_messages_created
+        ON remote_agent_agent_user_messages(created_at);
 
       -- User identity index. user_identities is a new table created above
       -- so its user_id column always exists. Indexes for the user_id columns

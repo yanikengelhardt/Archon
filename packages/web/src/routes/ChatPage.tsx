@@ -1,20 +1,21 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { MessageSquarePlus, Search, Plus, Loader2, FolderGit2 } from 'lucide-react';
+import { MessageSquarePlus, Search, Plus, Loader2, FolderGit2, Bot } from 'lucide-react';
 import { ChatInterface } from '@/components/chat/ChatInterface';
 import { ConversationItem } from '@/components/conversations/ConversationItem';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { useProject } from '@/contexts/ProjectContext';
 import { listConversations, listWorkflowRuns, addCodebase, getCodebaseInput } from '@/lib/api';
-import type { CodebaseResponse } from '@/lib/api';
+import type { AiAssistantType, CodebaseResponse } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 const PANEL_MIN = 220;
 const PANEL_MAX = 420;
 const PANEL_DEFAULT = 260;
 const STORAGE_KEY = 'archon-chat-panel-width';
+const ASSISTANT_STORAGE_KEY = 'archon-chat-assistant';
 
 function getInitialWidth(): number {
   const stored = localStorage.getItem(STORAGE_KEY);
@@ -23,6 +24,16 @@ function getInitialWidth(): number {
     if (parsed >= PANEL_MIN && parsed <= PANEL_MAX) return parsed;
   }
   return PANEL_DEFAULT;
+}
+
+function getInitialAssistant(): AiAssistantType {
+  try {
+    const stored = localStorage.getItem(ASSISTANT_STORAGE_KEY);
+    if (stored === 'codex' || stored === 'claude') return stored;
+  } catch {
+    // localStorage is best-effort only.
+  }
+  return 'claude';
 }
 
 export function ChatPage(): React.ReactElement {
@@ -35,6 +46,7 @@ export function ChatPage(): React.ReactElement {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [width, setWidth] = useState(getInitialWidth);
+  const [assistantType, setAssistantTypeRaw] = useState<AiAssistantType>(getInitialAssistant);
   const isResizing = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -48,6 +60,15 @@ export function ChatPage(): React.ReactElement {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, String(width));
   }, [width]);
+
+  const setAssistantType = useCallback((value: AiAssistantType): void => {
+    setAssistantTypeRaw(value);
+    try {
+      localStorage.setItem(ASSISTANT_STORAGE_KEY, value);
+    } catch {
+      // Selection still works for the current page load.
+    }
+  }, []);
 
   useEffect(() => {
     if (showAddInput) {
@@ -261,6 +282,38 @@ export function ChatPage(): React.ReactElement {
           )}
         </div>
 
+        {/* Assistant selector for newly created web conversations */}
+        <div className="px-3 pb-3">
+          <div className="mb-1 flex items-center gap-1.5">
+            <Bot className="h-3.5 w-3.5 text-text-tertiary" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">
+              Assistant
+            </span>
+          </div>
+          <div className="grid grid-cols-2 rounded-md border border-border bg-surface-elevated p-0.5">
+            {(['claude', 'codex'] as const).map(value => (
+              <button
+                key={value}
+                type="button"
+                onClick={(): void => {
+                  setAssistantType(value);
+                }}
+                className={cn(
+                  'rounded px-2 py-1.5 text-xs font-medium transition-colors',
+                  assistantType === value
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
+                )}
+              >
+                {value === 'claude' ? 'Claude' : 'Codex'}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-[10px] text-text-tertiary">
+            Used when the next new chat is created.
+          </p>
+        </div>
+
         <Separator className="bg-border" />
 
         {/* Search */}
@@ -320,7 +373,11 @@ export function ChatPage(): React.ReactElement {
 
       {/* Right panel - chat interface */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        <ChatInterface key={conversationId ?? 'new'} conversationId={conversationId ?? 'new'} />
+        <ChatInterface
+          key={conversationId ?? 'new'}
+          conversationId={conversationId ?? 'new'}
+          assistantType={assistantType}
+        />
       </div>
     </div>
   );

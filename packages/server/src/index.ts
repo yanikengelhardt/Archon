@@ -78,6 +78,7 @@ import { WorkflowEventBridge } from './adapters/web/workflow-bridge';
 import { DashboardEventPoller } from './adapters/web/dashboard-event-poller';
 import { PgNotifyListener } from './adapters/web/pg-notify-listener';
 import { registerApiRoutes } from './routes/api';
+import { startAnalyticsSyncer } from './services/analytics-syncer';
 import {
   handleMessage,
   pool,
@@ -317,6 +318,7 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
 
   // Start cleanup scheduler
   startCleanupScheduler();
+  const analyticsSyncer = await startAnalyticsSyncer();
 
   // Note: orphaned-run cleanup intentionally NOT called at server startup.
   // Running it here killed parallel workflow runs from other processes
@@ -987,6 +989,7 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
   const shutdown = (): void => {
     getLog().info('server_shutting_down');
     stopCleanupScheduler();
+    analyticsSyncer.stop();
     persistence.stopPeriodicFlush();
 
     // Flush all buffered messages before stopping adapters

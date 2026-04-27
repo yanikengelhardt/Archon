@@ -38,6 +38,7 @@ export const createConversationBodySchema = z
   .object({
     codebaseId: z.string().optional(),
     message: z.string().optional(),
+    aiAssistantType: z.enum(['claude', 'codex']).optional(),
   })
   .strict()
   .openapi('CreateConversationBody');

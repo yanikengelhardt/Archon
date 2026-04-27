@@ -20,7 +20,12 @@ import {
   getWorkflowRunByWorker,
   getHealth,
 } from '@/lib/api';
-import type { ConversationResponse, CodebaseResponse, MessageResponse } from '@/lib/api';
+import type {
+  AiAssistantType,
+  ConversationResponse,
+  CodebaseResponse,
+  MessageResponse,
+} from '@/lib/api';
 import type {
   ChatMessage,
   FileAttachment,
@@ -99,9 +104,13 @@ function mapMessageRow(row: MessageResponse): ChatMessage {
 
 interface ChatInterfaceProps {
   conversationId: string;
+  assistantType?: AiAssistantType;
 }
 
-export function ChatInterface({ conversationId }: ChatInterfaceProps): React.ReactElement {
+export function ChatInterface({
+  conversationId,
+  assistantType = 'claude',
+}: ChatInterfaceProps): React.ReactElement {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { selectedProjectId } = useProject();
@@ -622,7 +631,8 @@ export function ChatInterface({ conversationId }: ChatInterfaceProps): React.Rea
         try {
           const { conversationId: newId } = await createConversation(
             selectedProjectId ?? undefined,
-            message
+            message,
+            assistantType
           );
           targetConversationId = newId;
           // Cache messages under the new ID so the remounted ChatInterface picks them up
@@ -690,7 +700,7 @@ export function ChatInterface({ conversationId }: ChatInterfaceProps): React.Rea
         setSending(false);
       }
     },
-    [conversationId, isNewChat, navigate, onError, selectedProjectId, queryClient]
+    [assistantType, conversationId, isNewChat, navigate, onError, selectedProjectId, queryClient]
   );
 
   const isStreaming = messages.some(m => m.isStreaming);

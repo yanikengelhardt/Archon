@@ -59,6 +59,7 @@ export async function getOrCreateConversation(
   platformId: string,
   codebaseId?: string,
   parentConversationId?: string,
+  assistantTypeOverride?: string,
   userId?: string
 ): Promise<Conversation> {
   const existing = await pool.query<Conversation>(
@@ -76,7 +77,7 @@ export async function getOrCreateConversation(
   // Check if we should inherit from a parent conversation (e.g., Discord thread inheriting from parent channel)
   let inheritedCodebaseId: string | null = null;
   let inheritedCwd: string | null = null;
-  let assistantType = process.env.DEFAULT_AI_ASSISTANT ?? 'claude';
+  let assistantType = assistantTypeOverride ?? process.env.DEFAULT_AI_ASSISTANT ?? 'claude';
 
   if (parentConversationId) {
     const parent = await pool.query<Conversation>(
@@ -86,7 +87,7 @@ export async function getOrCreateConversation(
     if (parent.rows[0]) {
       inheritedCodebaseId = parent.rows[0].codebase_id;
       inheritedCwd = parent.rows[0].cwd;
-      assistantType = parent.rows[0].ai_assistant_type;
+      assistantType = assistantTypeOverride ?? parent.rows[0].ai_assistant_type;
       getLog().debug(
         { inheritedCodebaseId, inheritedCwd },
         'db.conversation_parent_context_inherited'
@@ -98,7 +99,7 @@ export async function getOrCreateConversation(
   const finalCodebaseId = codebaseId ?? inheritedCodebaseId;
 
   // Determine assistant type from codebase if provided (overrides inherited)
-  if (codebaseId) {
+  if (codebaseId && !assistantTypeOverride) {
     const codebase = await pool.query<{ ai_assistant_type: string }>(
       'SELECT ai_assistant_type FROM remote_agent_codebases WHERE id = $1',
       [codebaseId]

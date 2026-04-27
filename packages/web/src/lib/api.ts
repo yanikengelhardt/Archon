@@ -69,6 +69,8 @@ export type ProviderDefaults = Record<string, unknown>;
 export type SafeConfigResponse = components['schemas']['SafeConfig'];
 export type UpdateAssistantConfigBody = components['schemas']['UpdateAssistantConfigBody'];
 
+export type AiAssistantType = 'claude' | 'codex';
+
 export async function listProviders(): Promise<ProviderInfo[]> {
   const data = await fetchJSON<{ providers: ProviderInfo[] }>('/api/providers');
   return data.providers;
@@ -138,11 +140,13 @@ export async function listConversations(codebaseId?: string): Promise<Conversati
 
 export async function createConversation(
   codebaseId?: string,
-  message?: string
+  message?: string,
+  aiAssistantType?: AiAssistantType
 ): Promise<{ conversationId: string; id: string; dispatched?: boolean }> {
   const body: Record<string, string> = {};
   if (codebaseId) body.codebaseId = codebaseId;
   if (message) body.message = message;
+  if (aiAssistantType) body.aiAssistantType = aiAssistantType;
 
   return fetchJSON('/api/conversations', {
     method: 'POST',
@@ -452,6 +456,91 @@ export interface HubStats {
 
 export async function getHubStats(): Promise<HubStats> {
   return fetchJSON('/api/stats');
+}
+
+export type AnalyticsAgent = 'claude' | 'codex';
+export type AnalyticsPeriod = 'week' | 'month';
+
+export interface AnalyticsAgentTotals {
+  sessions: number;
+  toolCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  cachedInputTokens: number;
+  totalTokens: number;
+  costUsd: number | null;
+}
+
+export interface AnalyticsPeriodUsage {
+  key: AnalyticsPeriod;
+  label: string;
+  start: string;
+  end: string;
+  totals: AnalyticsAgentTotals & {
+    byAgent: Record<AnalyticsAgent, AnalyticsAgentTotals>;
+  };
+}
+
+export interface AnalyticsSummary {
+  generatedAt: string;
+  periods: AnalyticsPeriodUsage[];
+  totals: AnalyticsAgentTotals & {
+    byAgent: Record<AnalyticsAgent, AnalyticsAgentTotals>;
+  };
+}
+
+export interface AnalyticsSessionUsage {
+  agent: AnalyticsAgent;
+  providerSessionId: string;
+  cwd: string | null;
+  model: string | null;
+  startedAt: string;
+  lastActivityAt: string;
+  durationSeconds: number;
+  messageCount: number;
+  userMessages: string[];
+  toolCalls: number;
+  tools: string[];
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  cachedInputTokens: number;
+  totalTokens: number;
+  effectiveTokens: number;
+  costUsd: number | null;
+  tokensPerMessage: number | null;
+  outputInputRatio: number | null;
+}
+
+export interface AnalyticsSessionList {
+  generatedAt: string;
+  period: AnalyticsPeriod;
+  start: string;
+  end: string;
+  limit: number;
+  offset: number;
+  total: number;
+  sessions: AnalyticsSessionUsage[];
+}
+
+export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
+  return fetchJSON<AnalyticsSummary>('/api/analytics/summary?days=31');
+}
+
+export async function listAnalyticsSessions(
+  period: AnalyticsPeriod,
+  offset = 0,
+  limit = 10
+): Promise<AnalyticsSessionList> {
+  const params = new URLSearchParams({
+    period,
+    offset: String(offset),
+    limit: String(limit),
+  });
+  return fetchJSON<AnalyticsSessionList>(`/api/analytics/sessions?${params.toString()}`);
 }
 
 export async function getConfig(): Promise<{ config: SafeConfigResponse; database: string }> {

@@ -102,6 +102,7 @@ import * as workflowDb from '@archon/core/db/workflows';
 import * as workflowEventDb from '@archon/core/db/workflow-events';
 import * as messageDb from '@archon/core/db/messages';
 import * as userDb from '@archon/core/db/users';
+import * as analyticsDb from '@archon/core/db/analytics';
 import { resetWorkflowNodeSessions } from '@archon/core/operations/workflow-operations';
 import { getAuth, isWebAuthEnabled, getSignupMode, isApiGateEnabled } from '../auth';
 import { errorSchema } from './schemas/common.schemas';
@@ -1306,6 +1307,171 @@ const getStatsRoute = createRoute({
   },
 });
 
+const analyticsAgentTotalsSchema = z.object({
+  sessions: z.number(),
+  toolCalls: z.number(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  cacheCreationInputTokens: z.number(),
+  cacheReadInputTokens: z.number(),
+  cachedInputTokens: z.number(),
+  totalTokens: z.number(),
+  costUsd: z.number().nullable(),
+});
+
+const analyticsSummarySchema = z
+  .object({
+    generatedAt: z.string(),
+    periods: z.array(
+      z.object({
+        key: z.enum(['week', 'month']),
+        label: z.string(),
+        start: z.string(),
+        end: z.string(),
+        totals: analyticsAgentTotalsSchema.extend({
+          byAgent: z.object({
+            claude: analyticsAgentTotalsSchema,
+            codex: analyticsAgentTotalsSchema,
+          }),
+        }),
+      })
+    ),
+    totals: analyticsAgentTotalsSchema.extend({
+      byAgent: z.object({
+        claude: analyticsAgentTotalsSchema,
+        codex: analyticsAgentTotalsSchema,
+      }),
+    }),
+    windowBars: z.array(
+      z.object({
+        label: z.string(),
+        start: z.string(),
+        end: z.string(),
+        sessions: z.number(),
+        toolCalls: z.number(),
+        totalTokens: z.number(),
+        costUsd: z.number().nullable(),
+        byAgent: z.object({ claude: z.number(), codex: z.number() }),
+      })
+    ),
+    cumulativeSeries: z.array(
+      z.object({
+        date: z.string(),
+        totalTokens: z.number(),
+        costUsd: z.number().nullable(),
+      })
+    ),
+    dailyBars: z.array(
+      z.object({
+        date: z.string(),
+        sessions: z.number(),
+        toolCalls: z.number(),
+        inputTokens: z.number(),
+        outputTokens: z.number(),
+        totalTokens: z.number(),
+        costUsd: z.number().nullable(),
+        byAgent: z.object({ claude: z.number(), codex: z.number() }),
+      })
+    ),
+    forecast: z.object({
+      projectedMonthTokens: z.number().nullable(),
+      projectedMonthCostUsd: z.number().nullable(),
+      resetAt: z.string().nullable(),
+      daysRemaining: z.number().nullable(),
+    }),
+    recentSessionPulse: z.array(
+      z.object({
+        agent: z.enum(['claude', 'codex']),
+        providerSessionId: z.string(),
+        cwd: z.string().nullable(),
+        model: z.string().nullable(),
+        startedAt: z.string(),
+        lastActivityAt: z.string(),
+        messageCount: z.number(),
+        totalTokens: z.number(),
+        toolCalls: z.number(),
+      })
+    ),
+  })
+  .openapi('AnalyticsSummary');
+
+const analyticsSummaryQuerySchema = z.object({
+  days: z.string().optional(),
+});
+
+const analyticsSessionUsageSchema = z.object({
+  agent: z.enum(['claude', 'codex']),
+  providerSessionId: z.string(),
+  cwd: z.string().nullable(),
+  model: z.string().nullable(),
+  startedAt: z.string(),
+  lastActivityAt: z.string(),
+  durationSeconds: z.number(),
+  messageCount: z.number(),
+  userMessages: z.array(z.string()),
+  toolCalls: z.number(),
+  tools: z.array(z.string()),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  cacheCreationInputTokens: z.number(),
+  cacheReadInputTokens: z.number(),
+  cachedInputTokens: z.number(),
+  totalTokens: z.number(),
+  effectiveTokens: z.number(),
+  costUsd: z.number().nullable(),
+  tokensPerMessage: z.number().nullable(),
+  outputInputRatio: z.number().nullable(),
+});
+
+const analyticsSessionsSchema = z
+  .object({
+    generatedAt: z.string(),
+    period: z.enum(['week', 'month']),
+    start: z.string(),
+    end: z.string(),
+    limit: z.number(),
+    offset: z.number(),
+    total: z.number(),
+    sessions: z.array(analyticsSessionUsageSchema),
+  })
+  .openapi('AnalyticsSessions');
+
+const analyticsSessionsQuerySchema = z.object({
+  period: z.enum(['week', 'month']).optional(),
+  limit: z.string().optional(),
+  offset: z.string().optional(),
+});
+
+const getAnalyticsSummaryRoute = createRoute({
+  method: 'get',
+  path: '/api/analytics/summary',
+  tags: ['Analytics'],
+  summary: 'Aggregated Claude and Codex usage analytics',
+  request: { query: analyticsSummaryQuerySchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: analyticsSummarySchema } },
+      description: 'Claude and Codex usage analytics summary',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const getAnalyticsSessionsRoute = createRoute({
+  method: 'get',
+  path: '/api/analytics/sessions',
+  tags: ['Analytics'],
+  summary: 'Paginated Claude and Codex session usage',
+  request: { query: analyticsSessionsQuerySchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: analyticsSessionsSchema } },
+      description: 'Paginated Claude and Codex session usage',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
 const getUpdateCheckRoute = createRoute({
   method: 'get',
   path: '/api/update-check',
@@ -2339,7 +2505,10 @@ export function registerApiRoutes(
   // Accepts optional `message` field for atomic create+send (avoids ghost "Untitled" entries)
   registerOpenApiRoute(createConversationRoute, async c => {
     try {
-      const { codebaseId, message } = getValidatedBody(c, createConversationBodySchema);
+      const { codebaseId, message, aiAssistantType } = getValidatedBody(
+        c,
+        createConversationBodySchema
+      );
       const userId = await resolveWebUserId(c);
 
       // Validate codebase exists if provided
@@ -2357,6 +2526,7 @@ export function registerApiRoutes(
         conversationId,
         codebaseId,
         undefined,
+        aiAssistantType,
         userId
       );
       webAdapter.setConversationDbId(conversation.platform_conversation_id, conversation.id);
@@ -4221,6 +4391,35 @@ export function registerApiRoutes(
       workflowDb.getWorkflowStats(weekStart),
     ]);
     return c.json({ today, week });
+  });
+
+  registerOpenApiRoute(getAnalyticsSummaryRoute, async c => {
+    try {
+      const daysParam = c.req.query('days');
+      const parsedDays = daysParam ? Number.parseInt(daysParam, 10) : 30;
+      const days = Number.isFinite(parsedDays) ? parsedDays : 30;
+      return c.json(await analyticsDb.getAnalyticsSummary(days));
+    } catch (error) {
+      getLog().error({ err: error }, 'analytics.summary_failed');
+      return apiError(c, 500, 'Failed to load analytics summary');
+    }
+  });
+
+  registerOpenApiRoute(getAnalyticsSessionsRoute, async c => {
+    try {
+      const periodParam = c.req.query('period');
+      const period = periodParam === 'month' ? 'month' : 'week';
+      const limitParam = c.req.query('limit');
+      const offsetParam = c.req.query('offset');
+      const parsedLimit = limitParam ? Number.parseInt(limitParam, 10) : 10;
+      const parsedOffset = offsetParam ? Number.parseInt(offsetParam, 10) : 0;
+      const limit = Number.isFinite(parsedLimit) ? parsedLimit : 10;
+      const offset = Number.isFinite(parsedOffset) ? parsedOffset : 0;
+      return c.json(await analyticsDb.listAnalyticsSessions(period, limit, offset));
+    } catch (error) {
+      getLog().error({ err: error }, 'analytics.sessions_failed');
+      return apiError(c, 500, 'Failed to load analytics sessions');
+    }
   });
 
   registerOpenApiRoute(getUpdateCheckRoute, async c => {
