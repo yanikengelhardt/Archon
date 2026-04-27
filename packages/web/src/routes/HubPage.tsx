@@ -72,12 +72,22 @@ function StatsCards({ stats }: { stats: HubStats | undefined }): React.ReactElem
     {
       label: 'Today',
       primary: today ? String(today.runs) : '—',
-      secondary: todayTokens > 0 ? `${formatTokens(todayTokens)} tokens` : 'no runs yet',
+      secondary:
+        todayTokens > 0
+          ? `${formatTokens(todayTokens)} tokens`
+          : today && today.runs > 0
+            ? 'no token data yet'
+            : 'no runs yet',
     },
     {
       label: 'This Week',
       primary: week ? String(week.runs) : '—',
-      secondary: weekTokens > 0 ? `${formatTokens(weekTokens)} tokens` : 'no runs yet',
+      secondary:
+        weekTokens > 0
+          ? `${formatTokens(weekTokens)} tokens`
+          : week && week.runs > 0
+            ? 'tracking starts now'
+            : 'no runs yet',
     },
     {
       label: 'Success Rate',
@@ -311,16 +321,27 @@ export function HubPage(): React.ReactElement {
     refetchInterval: 60_000,
   });
 
-  const { data: workflows = [] } = useQuery({
+  const { data: allWorkflows = [] } = useQuery({
     queryKey: ['workflows', selectedCwd ?? null],
     queryFn: () => listWorkflows(selectedCwd),
   });
+  // When a project is selected, only show that project's own workflows (source: 'project').
+  // When no project is selected, show everything (bundled + global).
+  const workflows = useMemo(
+    () => (localProjectId ? allWorkflows.filter(e => e.source === 'project') : allWorkflows),
+    [allWorkflows, localProjectId]
+  );
 
   const { data: commandEntries = [] } = useQuery({
     queryKey: ['commands', selectedCwd ?? null],
     queryFn: () => listCommands(selectedCwd),
   });
-  const commands = useMemo(() => commandEntries.map(e => e.name), [commandEntries]);
+  // Same filter logic for skills
+  const commands = useMemo(
+    () =>
+      commandEntries.filter(e => (localProjectId ? e.source === 'project' : true)).map(e => e.name),
+    [commandEntries, localProjectId]
+  );
 
   const { data: runsData } = useQuery({
     queryKey: ['dashboardRuns', { limit: 15, forHub: true }],
