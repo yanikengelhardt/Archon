@@ -271,6 +271,39 @@ describe('POST /api/conversations/:id/message', () => {
     );
   });
 
+  test('continues CLI-created conversations without changing their platform type', async () => {
+    const cliConv = {
+      ...MOCK_CONV,
+      platform_conversation_id: 'cli-chat-123-abc',
+      platform_type: 'cli',
+    };
+    mockFindConversationByPlatformId.mockImplementationOnce(async () => cliConv);
+    mockAddMessage.mockImplementationOnce(async () => ({
+      id: 'msg-1',
+      conversation_id: cliConv.id,
+      role: 'user' as const,
+      content: 'Continue from web',
+      metadata: '{}',
+      created_at: new Date().toISOString(),
+    }));
+    mockHandleMessage.mockImplementationOnce(async () => {});
+
+    const { app } = makeApp();
+    const response = await app.request('/api/conversations/cli-chat-123-abc/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Continue from web' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockHandleMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      'cli-chat-123-abc',
+      'Continue from web',
+      expect.objectContaining({ conversationPlatformType: 'cli' })
+    );
+  });
+
   test('still dispatches when conversation lookup fails (no message persistence)', async () => {
     mockFindConversationByPlatformId.mockImplementationOnce(async () => null);
     mockHandleMessage.mockImplementationOnce(async () => {});

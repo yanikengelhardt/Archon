@@ -2292,6 +2292,22 @@ describe('handleMessage — workflow context injection', () => {
     expect(mockGetRecentWorkflowResultMessages).toHaveBeenCalledWith('conv-1', 3);
   });
 
+  test('uses conversationPlatformType for DB lookup when output adapter differs', async () => {
+    const platform = makePlatform();
+
+    await handleMessage(platform, 'cli-chat-123-abc', 'Continue from web', {
+      conversationPlatformType: 'cli',
+    });
+
+    expect(mockGetOrCreateConversation).toHaveBeenCalledWith(
+      'cli',
+      'cli-chat-123-abc',
+      undefined,
+      undefined,
+      undefined
+    );
+  });
+
   test('does not throw when getRecentWorkflowResultMessages returns empty array', async () => {
     mockGetRecentWorkflowResultMessages.mockResolvedValueOnce([]);
     const platform = makePlatform();

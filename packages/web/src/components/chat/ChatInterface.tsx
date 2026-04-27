@@ -281,6 +281,10 @@ export function ChatInterface({
   });
   const currentConv = conversations?.find(c => c.platform_conversation_id === conversationId);
   const currentCodebase = codebases?.find(cb => cb.id === currentConv?.codebase_id);
+  const canContinueConversation =
+    currentConv == null ||
+    currentConv.platform_type === 'web' ||
+    currentConv.platform_type === 'cli';
   // Fall back to selectedProjectId codebase for header before conversation exists in DB
   const contextCodebase =
     !currentCodebase && selectedProjectId
@@ -739,14 +743,9 @@ export function ChatInterface({
       <MessageInput
         ref={inputRef}
         onSend={handleSend}
-        disabled={
-          sending ||
-          locked ||
-          isStreaming ||
-          (currentConv != null && currentConv.platform_type !== 'web')
-        }
+        disabled={sending || locked || isStreaming || !canContinueConversation}
         disabledReason={
-          currentConv != null && currentConv.platform_type !== 'web'
+          !canContinueConversation
             ? 'Continuing chats from other platforms in the Web UI is coming soon'
             : undefined
         }

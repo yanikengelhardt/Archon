@@ -46,6 +46,12 @@ export interface HandleMessageContext {
   readonly threadContext?: string;
   readonly parentConversationId?: string;
   readonly assistantType?: string;
+  /**
+   * Platform type of the conversation record to continue. This may differ from
+   * the active output adapter, e.g. Web UI continuing a CLI-created chat while
+   * still streaming responses over SSE.
+   */
+  readonly conversationPlatformType?: string;
   readonly isolationHints?: IsolationHints;
   readonly attachedFiles?: AttachedFile[];
   /**

@@ -2759,10 +2759,13 @@ export function registerApiRoutes(
     // Pass savedFiles to dispatchToOrchestrator so cleanup happens inside the lock handler,
     // AFTER handleMessage completes — not in the HTTP handler's finally block where the
     // fire-and-forget lock callback may still be running and the AI has not yet read the files.
-    const extraContext: Omit<HandleMessageContext, 'isolationHints'> =
-      savedFiles.length > 0 ? { userId, attachedFiles: savedFiles } : { userId };
+    let extraContext: Omit<HandleMessageContext, 'isolationHints'> =
+      conv && conv.platform_type !== 'web'
+        ? { userId, conversationPlatformType: conv.platform_type }
+        : { userId };
     let filesToCleanup: { files: AttachedFile[]; uploadDir: string } | undefined;
     if (savedFiles.length > 0) {
+      extraContext = { ...extraContext, attachedFiles: savedFiles };
       filesToCleanup = { files: savedFiles, uploadDir };
     }
     const result = await dispatchToOrchestrator(

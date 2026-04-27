@@ -979,15 +979,16 @@ export async function handleMessage(
   message: string,
   context?: HandleMessageContext
 ): Promise<void> {
-    const {
-      issueContext,
-      threadContext,
-      parentConversationId,
-      isolationHints,
-      attachedFiles,
-      userId,
-      assistantType,
-    } = context ?? {};
+  const {
+    issueContext,
+    threadContext,
+    parentConversationId,
+    assistantType,
+    conversationPlatformType,
+    isolationHints,
+    attachedFiles,
+    userId,
+  } = context ?? {};
   try {
     getLog().debug({ conversationId, userId }, 'orchestrator_message_received');
 
@@ -998,7 +999,7 @@ export async function handleMessage(
     // SENDER when the adapter supplied one (see executionUserId below).
     // Per-message attribution happens on workflow_runs.
     let conversation = await db.getOrCreateConversation(
-      platform.getPlatformType(),
+      conversationPlatformType ?? platform.getPlatformType(),
       conversationId,
       undefined,
       parentConversationId,
