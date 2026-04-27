@@ -979,14 +979,15 @@ export async function handleMessage(
   message: string,
   context?: HandleMessageContext
 ): Promise<void> {
-  const {
-    issueContext,
-    threadContext,
-    parentConversationId,
-    isolationHints,
-    attachedFiles,
-    userId,
-  } = context ?? {};
+    const {
+      issueContext,
+      threadContext,
+      parentConversationId,
+      isolationHints,
+      attachedFiles,
+      userId,
+      assistantType,
+    } = context ?? {};
   try {
     getLog().debug({ conversationId, userId }, 'orchestrator_message_received');
 
@@ -1001,6 +1002,7 @@ export async function handleMessage(
       conversationId,
       undefined,
       parentConversationId,
+      assistantType,
       userId
     );
     conversation = await inheritThreadContext(

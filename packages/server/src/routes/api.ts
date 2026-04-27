@@ -130,7 +130,7 @@ import {
   resetWorkflowNodeSessionsQuerySchema,
   resetWorkflowNodeSessionsResponseSchema,
   listArtifactsResponseSchema,
-  hubStatsSchema,
+  statsSchema,
 } from './schemas/workflow.schemas';
 import {
   conversationListResponseSchema,
@@ -1319,8 +1319,8 @@ const getStatsRoute = createRoute({
   summary: 'Aggregated workflow usage stats (token counts, run counts)',
   responses: {
     200: {
-      content: { 'application/json': { schema: hubStatsSchema } },
-      description: 'Hub stats for today and the last 7 days',
+      content: { 'application/json': { schema: statsSchema } },
+      description: 'Stats for today and the last 7 days',
     },
   },
 });

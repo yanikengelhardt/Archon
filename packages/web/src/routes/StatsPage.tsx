@@ -446,7 +446,7 @@ function QuickLaunch({
   );
 }
 
-export function HubPage(): ReactElement {
+export function StatsPage(): ReactElement {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { codebases, selectedProjectId } = useProject();
@@ -514,7 +514,7 @@ export function HubPage(): ReactElement {
   });
 
   const { data: runsData } = useQuery({
-    queryKey: ['dashboardRuns', { limit: 10, forHub: true }],
+    queryKey: ['dashboardRuns', { limit: 10, forStats: true }],
     queryFn: () => listDashboardRuns({ limit: 10 }),
     refetchInterval: 5_000,
   });

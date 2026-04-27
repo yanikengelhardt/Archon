@@ -45,6 +45,7 @@ export interface HandleMessageContext {
   readonly issueContext?: string;
   readonly threadContext?: string;
   readonly parentConversationId?: string;
+  readonly assistantType?: string;
   readonly isolationHints?: IsolationHints;
   readonly attachedFiles?: AttachedFile[];
   /**

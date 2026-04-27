@@ -31,7 +31,11 @@ if (!process.env.CLAUDE_API_KEY && !process.env.CLAUDE_CODE_OAUTH_TOKEN) {
 // DATABASE_URL is no longer required - SQLite will be used as default
 
 // Bootstrap provider registry before any provider lookups
-import { registerBuiltinProviders, registerCommunityProviders } from '@archon/providers';
+import {
+  isRegisteredProvider,
+  registerBuiltinProviders,
+  registerCommunityProviders,
+} from '@archon/providers';
 registerBuiltinProviders();
 registerCommunityProviders();
 
@@ -174,6 +178,7 @@ Options:
 
 Examples:
   archon chat "What does the orchestrator do?"
+  archon chat --assistant codex "$ga4 get internal clicks for /tagesgeld/"
   archon workflow list
   archon workflow run investigate-issue "Fix the login bug"
   archon workflow run plan --cwd /path/to/repo "Add dark mode"
@@ -299,6 +304,7 @@ async function main(): Promise<number> {
         status: { type: 'string' },
         limit: { type: 'string' },
         effort: { type: 'string' },
+        assistant: { type: 'string' },
       },
       allowPositionals: true,
       strict: false, // Allow unknown flags to pass through
@@ -415,12 +421,22 @@ async function main(): Promise<number> {
         break;
 
       case 'chat': {
-        const chatMessage = positionals.slice(1).join(' ');
-        if (!chatMessage) {
-          console.error('Usage: archon chat <message>');
+        let assistantType = values.assistant as string | undefined;
+        let messageParts = positionals.slice(1);
+        if (!assistantType && messageParts[0] && isRegisteredProvider(messageParts[0])) {
+          assistantType = messageParts[0];
+          messageParts = messageParts.slice(1);
+        }
+        if (assistantType && !isRegisteredProvider(assistantType)) {
+          console.error(`Error: Unknown assistant "${assistantType}".`);
           return 1;
         }
-        await chatCommand(chatMessage);
+        const chatMessage = messageParts.join(' ');
+        if (!chatMessage) {
+          console.error('Usage: archon chat [--assistant <provider>] <message>');
+          return 1;
+        }
+        await chatCommand(chatMessage, { assistantType });
         break;
       }
 

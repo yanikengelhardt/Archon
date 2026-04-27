@@ -21,9 +21,31 @@ mock.module('@archon/paths', () => ({
   createLogger: mock(() => mockLogger),
 }));
 
+const mockGetOrCreateConversation = mock(async () => ({
+  id: 'conv-db-123',
+  platform_type: 'cli',
+  platform_conversation_id: 'cli-chat-1',
+  codebase_id: null,
+  cwd: null,
+  isolation_env_id: null,
+  ai_assistant_type: 'claude',
+  title: null,
+  hidden: false,
+  deleted_at: null,
+  last_activity_at: null,
+  created_at: new Date(),
+  updated_at: new Date(),
+}));
+
+mock.module('@archon/core/db/conversations', () => ({
+  getOrCreateConversation: mockGetOrCreateConversation,
+}));
+
+const mockAddMessage = mock(() => Promise.resolve());
+
 // Mock @archon/core/db/messages (used by CLIAdapter for persistence)
 mock.module('@archon/core/db/messages', () => ({
-  addMessage: mock(() => Promise.resolve()),
+  addMessage: mockAddMessage,
 }));
 
 // Mock handleMessage from @archon/core
@@ -39,6 +61,8 @@ import { CLIAdapter } from '../adapters/cli-adapter';
 describe('chatCommand', () => {
   beforeEach(() => {
     mockHandleMessage.mockClear();
+    mockGetOrCreateConversation.mockClear();
+    mockAddMessage.mockClear();
   });
 
   test('should call handleMessage with a CLIAdapter, unique conversationId, and the message', async () => {
@@ -55,6 +79,7 @@ describe('chatCommand', () => {
     expect(adapter).toBeInstanceOf(CLIAdapter);
     expect(conversationId).toMatch(/^cli-chat-\d+-[a-z0-9]+$/);
     expect(message).toBe('Hello, agent!');
+    expect(mockAddMessage).toHaveBeenCalledWith('conv-db-123', 'user', 'Hello, agent!');
   });
 
   test('should use batch streaming mode for the CLIAdapter', async () => {
@@ -62,6 +87,26 @@ describe('chatCommand', () => {
 
     const [adapter] = mockHandleMessage.mock.calls[0] as [CLIAdapter, string, string];
     expect(adapter.getStreamingMode()).toBe('batch');
+  });
+
+  test('should pass assistantType context when provided', async () => {
+    await chatCommand('$ga4 get clicks', { assistantType: 'codex' });
+
+    const [, , message, context] = mockHandleMessage.mock.calls[0] as [
+      CLIAdapter,
+      string,
+      string,
+      { assistantType?: string },
+    ];
+    expect(message).toBe('$ga4 get clicks');
+    expect(context.assistantType).toBe('codex');
+    expect(mockGetOrCreateConversation).toHaveBeenCalledWith(
+      'cli',
+      expect.stringMatching(/^cli-chat-\d+-[a-z0-9]+$/),
+      undefined,
+      undefined,
+      'codex'
+    );
   });
 
   test('should generate a unique conversationId for each invocation', async () => {

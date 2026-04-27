@@ -251,7 +251,7 @@ export const dashboardRunsQuerySchema = z.object({
   offset: z.string().optional(),
 });
 
-const hubStatsPeriodSchema = z.object({
+const statsPeriodSchema = z.object({
   runs: z.number(),
   completed: z.number(),
   failed: z.number(),
@@ -263,14 +263,14 @@ const hubStatsPeriodSchema = z.object({
 });
 
 /** GET /api/stats response schema. */
-export const hubStatsSchema = z
+export const statsSchema = z
   .object({
-    today: hubStatsPeriodSchema,
-    week: hubStatsPeriodSchema,
+    today: statsPeriodSchema,
+    week: statsPeriodSchema,
   })
-  .openapi('HubStats');
+  .openapi('Stats');
 
-export type HubStats = z.infer<typeof hubStatsSchema>;
+export type Stats = z.infer<typeof statsSchema>;
 
 /** GET /api/workflows/runs query params. */
 export const workflowRunsQuerySchema = z.object({

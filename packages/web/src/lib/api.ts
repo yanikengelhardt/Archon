@@ -459,7 +459,7 @@ export async function listCommands(cwd?: string): Promise<CommandEntry[]> {
   return result.commands;
 }
 
-export interface HubStatsPeriod {
+export interface StatsPeriod {
   runs: number;
   completed: number;
   failed: number;
@@ -468,12 +468,12 @@ export interface HubStatsPeriod {
   by_workflow: { name: string; tokens_input: number; tokens_output: number }[];
 }
 
-export interface HubStats {
-  today: HubStatsPeriod;
-  week: HubStatsPeriod;
+export interface Stats {
+  today: StatsPeriod;
+  week: StatsPeriod;
 }
 
-export async function getHubStats(): Promise<HubStats> {
+export async function getStats(): Promise<Stats> {
   return fetchJSON('/api/stats');
 }
 
