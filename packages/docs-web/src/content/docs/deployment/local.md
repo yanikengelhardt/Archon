@@ -53,6 +53,35 @@ In development mode, two servers run simultaneously:
 | Web UI     | http://localhost:5173  | React frontend (Vite dev server) |
 | API Server | http://localhost:3090  | Backend API + SSE streaming      |
 
+### Optional: Keep Local Dev Running in the Background on macOS
+
+For a persistent local setup that uses your normal `~/.archon` database, project paths, Slack listener, and agent stats logs, install the launchd dev services:
+
+```bash
+bun run devd
+```
+
+This starts the API server with `WEB_UI_DEV=1`, so `localhost:3090` is API-only and Vite remains the default Web UI at `http://localhost:5173`.
+
+To make it available from any directory, install the local launcher once:
+
+```bash
+bun run devd:link
+archon-dev
+```
+
+```bash
+bun run devd:status   # Show launchd status
+bun run devd:logs     # Tail server and Vite logs
+bun run devd:restart  # Restart both services
+bun run devd:stop     # Stop both services
+bun run dev:daemon:uninstall
+```
+
+After linking, the same actions are available from any directory as `archon-dev status`, `archon-dev logs`, `archon-dev restart`, and `archon-dev stop`.
+
+Logs are written to `~/.archon/logs/dev-daemon/`. The generated LaunchAgent files live in `~/Library/LaunchAgents/`.
+
 ### Optional: Use PostgreSQL Instead of SQLite
 
 If you prefer PostgreSQL for local development:

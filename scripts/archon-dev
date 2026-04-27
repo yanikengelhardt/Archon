@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Convenience launcher for Archon's local development daemon.
+
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  TARGET="$(readlink "$SOURCE")"
+  if [[ "$TARGET" == /* ]]; then
+    SOURCE="$TARGET"
+  else
+    SOURCE="$DIR/$TARGET"
+  fi
+done
+
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+DAEMON_SCRIPT="$SCRIPT_DIR/local-dev-daemon.sh"
+
+if [ ! -f "$DAEMON_SCRIPT" ]; then
+  echo "Could not find local-dev-daemon.sh next to archon-dev." >&2
+  exit 1
+fi
+
+command="${1:-start}"
+shift || true
+
+exec "$DAEMON_SCRIPT" "$command" "$@"
