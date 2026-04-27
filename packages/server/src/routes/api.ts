@@ -128,6 +128,7 @@ import {
   resetWorkflowNodeSessionsQuerySchema,
   resetWorkflowNodeSessionsResponseSchema,
   listArtifactsResponseSchema,
+  hubStatsSchema,
 } from './schemas/workflow.schemas';
 import {
   conversationListResponseSchema,
@@ -1288,6 +1289,19 @@ const getHealthRoute = createRoute({
         },
       },
       description: 'Health status',
+    },
+  },
+});
+
+const getStatsRoute = createRoute({
+  method: 'get',
+  path: '/api/stats',
+  tags: ['System'],
+  summary: 'Aggregated workflow usage stats (token counts, run counts)',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: hubStatsSchema } },
+      description: 'Hub stats for today and the last 7 days',
     },
   },
 });
@@ -4193,6 +4207,20 @@ export function registerApiRoutes(
       is_docker: isDocker(),
       activePlatforms: activePlatforms ? [...activePlatforms] : ['Web'],
     });
+  });
+
+  registerOpenApiRoute(getStatsRoute, async c => {
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const weekStart = new Date(now);
+    weekStart.setDate(weekStart.getDate() - 7);
+
+    const [today, week] = await Promise.all([
+      workflowDb.getWorkflowStats(todayStart),
+      workflowDb.getWorkflowStats(weekStart),
+    ]);
+    return c.json({ today, week });
   });
 
   registerOpenApiRoute(getUpdateCheckRoute, async c => {

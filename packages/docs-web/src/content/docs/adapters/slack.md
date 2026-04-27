@@ -108,10 +108,17 @@ For each command:
    - **Usage Hint**: e.g. `<message>` or `<subcommand>`
 4. Save
 
-Reinstall the app (Step 5) after adding scopes or commands so Slack issues a
+Reinstall the app (Step 6) after adding scopes or commands so Slack issues a
 fresh token with the new permissions.
 
-## Step 5: Install to Workspace
+## Step 5: Enable Direct Messages
+
+1. In the left sidebar, click **App Home**
+2. Scroll to **Messages Tab**
+3. Toggle **Allow users to send Slash commands and messages from the messages tab** to ON
+4. Click **Save Changes**
+
+## Step 6: Install to Workspace
 
 1. In the left sidebar, click **Install App**
 2. Click **Install to Workspace**
@@ -119,7 +126,10 @@ fresh token with the new permissions.
 4. **Copy the Bot User OAuth Token** (starts with `xoxb-`) -- this is your `SLACK_BOT_TOKEN`
 5. Set the bot token in your `.env` file
 
-## Step 6: Set Environment Variables
+If you added scopes or events after the app was already installed, click **Reinstall to Workspace**
+so Slack grants the new permissions.
+
+## Step 7: Set Environment Variables
 
 Add to your `.env` file:
 
@@ -128,7 +138,7 @@ SLACK_BOT_TOKEN=xoxb-your-bot-token
 SLACK_APP_TOKEN=xapp-your-app-token
 ```
 
-## Step 7: Invite Bot to Channel
+## Step 8: Invite Bot to Channel
 
 1. Go to the Slack channel where you want to use the bot
 2. Type `/invite @your-bot` (your bot's display name)
@@ -214,8 +224,17 @@ clicks are silently dropped and logged.
 1. Check that Socket Mode is enabled
 2. Verify both tokens are correct in `.env`
 3. Check the app logs for errors
-4. Ensure the bot is invited to the channel
-5. Make sure you're @mentioning the bot (not just typing)
+4. Reinstall the app after adding scopes or event subscriptions
+5. Ensure the bot is invited to the channel
+6. Make sure you're @mentioning the bot in channels (DMs do not require @mention)
+
+### Direct Messages Don't Respond
+
+1. Confirm `message.im` is under **Subscribe to bot events**
+2. Confirm `im:history`, `im:read`, `im:write`, and `chat:write` are under **Bot Token Scopes**
+3. Enable **App Home** > **Messages Tab** > **Allow users to send Slash commands and messages from the messages tab**
+4. Reinstall the app to the workspace after those changes
+5. Restart Archon so it reconnects to Slack Socket Mode
 
 ### "channel_not_found" Error
 

@@ -1,7 +1,7 @@
 /**
  * Unit tests for Slack adapter
  */
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
 import type { Mock } from 'bun:test';
 
 // Mock logger to suppress noisy output during tests
@@ -37,6 +37,7 @@ const mockUsersInfo = mock(() =>
   })
 );
 const mockEvent = mock(() => {});
+const mockUse = mock(() => {});
 const mockStart = mock(() => Promise.resolve(undefined));
 const mockStop = mock(() => Promise.resolve(undefined));
 const mockCommand = mock(() => {});
@@ -57,6 +58,7 @@ const mockApp = {
   event: mockEvent,
   command: mockCommand,
   action: mockAction,
+  use: mockUse,
   start: mockStart,
   stop: mockStop,
 };
@@ -72,9 +74,45 @@ mock.module('@slack/bolt', () => ({
 import { SlackAdapter } from './adapter';
 import type { SlackMessageEvent } from './types';
 
+interface SlackMessageFixture {
+  text?: string;
+  user?: string;
+  channel?: string;
+  ts?: string;
+  thread_ts?: string;
+  channel_type?: string;
+  bot_id?: string;
+}
+
+type RegisteredSlackHandler = (args: { event: SlackMessageFixture }) => Promise<void> | void;
+type SlackEventRegistrar = (eventName: string, handler: RegisteredSlackHandler) => void;
+
+const originalSlackAllowedUserIds = process.env.SLACK_ALLOWED_USER_IDS;
+
+function getRegisteredEventHandler(eventName: string): RegisteredSlackHandler {
+  const calls = (mockEvent as Mock<SlackEventRegistrar>).mock.calls;
+  const call = calls.find(([registeredName]) => registeredName === eventName);
+  expect(call).toBeDefined();
+  return call?.[1] as RegisteredSlackHandler;
+}
+
 describe('SlackAdapter', () => {
   beforeEach(() => {
+    delete process.env.SLACK_ALLOWED_USER_IDS;
     mockPostMessage.mockClear();
+    mockReplies.mockClear();
+    mockEvent.mockClear();
+    mockUse.mockClear();
+    mockStart.mockClear();
+    mockStop.mockClear();
+  });
+
+  afterAll(() => {
+    if (originalSlackAllowedUserIds === undefined) {
+      delete process.env.SLACK_ALLOWED_USER_IDS;
+    } else {
+      process.env.SLACK_ALLOWED_USER_IDS = originalSlackAllowedUserIds;
+    }
   });
 
   describe('streaming mode configuration', () => {
@@ -275,6 +313,122 @@ describe('SlackAdapter', () => {
       // Edge case: if somehow only channel ID is passed
       const result = await adapter.ensureThread('C123');
       expect(result).toBe('C123');
+    });
+  });
+
+  describe('incoming Socket Mode events', () => {
+    test('should register mention and message event handlers on start', async () => {
+      const adapter = new SlackAdapter('xoxb-fake', 'xapp-fake');
+
+      await adapter.start();
+
+      expect(mockEvent).toHaveBeenCalledWith('app_mention', expect.any(Function));
+      expect(mockEvent).toHaveBeenCalledWith('message', expect.any(Function));
+      expect(mockStart).toHaveBeenCalled();
+    });
+
+    test('should handle direct messages with channel_type im', async () => {
+      const adapter = new SlackAdapter('xoxb-fake', 'xapp-fake');
+      const receivedEvents: SlackMessageEvent[] = [];
+      adapter.onMessage(async event => {
+        receivedEvents.push(event);
+      });
+      await adapter.start();
+
+      const messageHandler = getRegisteredEventHandler('message');
+      await messageHandler({
+        event: {
+          text: '/help',
+          user: 'U123',
+          channel: 'D456',
+          ts: '1234567890.123456',
+          channel_type: 'im',
+        },
+      });
+
+      expect(receivedEvents).toEqual([
+        {
+          text: '/help',
+          user: 'U123',
+          channel: 'D456',
+          ts: '1234567890.123456',
+          thread_ts: undefined,
+        },
+      ]);
+    });
+
+    test('should handle direct messages without channel_type when channel ID is a DM', async () => {
+      const adapter = new SlackAdapter('xoxb-fake', 'xapp-fake');
+      const receivedEvents: SlackMessageEvent[] = [];
+      adapter.onMessage(async event => {
+        receivedEvents.push(event);
+      });
+      await adapter.start();
+
+      const messageHandler = getRegisteredEventHandler('message');
+      await messageHandler({
+        event: {
+          text: '/status',
+          user: 'U123',
+          channel: 'D456',
+          ts: '1234567890.123456',
+        },
+      });
+
+      expect(receivedEvents).toEqual([
+        {
+          text: '/status',
+          user: 'U123',
+          channel: 'D456',
+          ts: '1234567890.123456',
+          thread_ts: undefined,
+        },
+      ]);
+    });
+
+    test('should ignore non-DM message events', async () => {
+      const adapter = new SlackAdapter('xoxb-fake', 'xapp-fake');
+      const receivedEvents: SlackMessageEvent[] = [];
+      adapter.onMessage(async event => {
+        receivedEvents.push(event);
+      });
+      await adapter.start();
+
+      const messageHandler = getRegisteredEventHandler('message');
+      await messageHandler({
+        event: {
+          text: 'hello',
+          user: 'U123',
+          channel: 'C456',
+          ts: '1234567890.123456',
+          channel_type: 'channel',
+        },
+      });
+
+      expect(receivedEvents).toEqual([]);
+    });
+
+    test('should ignore bot DM messages', async () => {
+      const adapter = new SlackAdapter('xoxb-fake', 'xapp-fake');
+      const receivedEvents: SlackMessageEvent[] = [];
+      adapter.onMessage(async event => {
+        receivedEvents.push(event);
+      });
+      await adapter.start();
+
+      const messageHandler = getRegisteredEventHandler('message');
+      await messageHandler({
+        event: {
+          text: 'bot message',
+          user: 'U123',
+          channel: 'D456',
+          ts: '1234567890.123456',
+          channel_type: 'im',
+          bot_id: 'B123',
+        },
+      });
+
+      expect(receivedEvents).toEqual([]);
     });
   });
 

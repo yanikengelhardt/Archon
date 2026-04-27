@@ -1296,9 +1296,10 @@ async function collectSlackConfig(): Promise<SlackConfig> {
       '   - channels:join, im:history, im:write, im:read\n' +
       '4. Subscribe to Bot Events (Event Subscriptions):\n' +
       '   - app_mention, message.im\n' +
-      '5. Install to Workspace\n' +
+      '5. Enable App Home -> Messages Tab for DMs\n' +
+      '6. Install/Reinstall to Workspace\n' +
       '   - Copy the Bot User OAuth Token (xoxb-...)\n' +
-      '6. Invite bot to your channel: /invite @YourBotName\n\n' +
+      '7. Invite bot to your channel: /invite @YourBotName\n\n' +
       'Get your user ID: Click profile -> ... -> Copy member ID',
     'Slack Setup'
   );

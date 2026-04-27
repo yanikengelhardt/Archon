@@ -37,6 +37,61 @@ export interface SlackMessageRef {
 /** Cap on the in-memory triggering-message map to prevent unbounded growth. */
 const MAX_TRACKED_TRIGGERS = 1000;
 
+interface SlackMessagePayload {
+  text?: string;
+  user?: string;
+  channel?: string;
+  ts?: string;
+  thread_ts?: string;
+  channel_type?: string;
+  bot_id?: string;
+}
+
+interface SlackBodyInfo {
+  type?: string;
+  eventType?: string;
+  channelType?: string;
+  channel?: string;
+  maskedUserId: string;
+}
+
+function isDirectMessageEvent(event: SlackMessagePayload): boolean {
+  if (event.channel_type === 'im') {
+    return true;
+  }
+
+  // Slack DM channel IDs start with D. This keeps DMs working if Slack/Bolt
+  // delivers a message.im payload without channel_type.
+  return event.channel_type === undefined && event.channel?.startsWith('D') === true;
+}
+
+function maskSlackUserId(userId: string | undefined): string {
+  return userId ? `${userId.slice(0, 4)}***` : 'unknown';
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function getSlackBodyInfo(body: unknown): SlackBodyInfo {
+  if (body == null || typeof body !== 'object') {
+    return { maskedUserId: 'unknown' };
+  }
+
+  const bodyRecord = body as Record<string, unknown>;
+  const event = bodyRecord.event;
+  const eventRecord =
+    event != null && typeof event === 'object' ? (event as Record<string, unknown>) : {};
+
+  return {
+    type: readString(bodyRecord.type),
+    eventType: readString(eventRecord.type),
+    channelType: readString(eventRecord.channel_type),
+    channel: readString(eventRecord.channel),
+    maskedUserId: maskSlackUserId(readString(eventRecord.user)),
+  };
+}
+
 export class SlackAdapter implements IPlatformAdapter {
   private app: App;
   private streamingMode: 'stream' | 'batch';
@@ -388,13 +443,43 @@ export class SlackAdapter implements IPlatformAdapter {
    * Start the bot (connects via Socket Mode)
    */
   async start(): Promise<void> {
+    try {
+      const auth = await this.app.client.auth.test();
+      getLog().info(
+        {
+          team: auth.team,
+          teamId: auth.team_id,
+          user: auth.user,
+          userId: auth.user_id,
+          botId: auth.bot_id,
+        },
+        'slack.auth_test_ok'
+      );
+    } catch (error) {
+      getLog().error({ err: error }, 'slack.auth_test_failed');
+    }
+
+    this.app.use(async ({ body, next }) => {
+      getLog().info(getSlackBodyInfo(body), 'slack.bolt_payload_received');
+      await next();
+    });
+
     // Register app_mention event handler (when bot is @mentioned)
     this.app.event('app_mention', async ({ event }) => {
+      getLog().info(
+        {
+          maskedUserId: maskSlackUserId(event.user),
+          channel: event.channel,
+          hasText: Boolean(event.text),
+          hasThreadTs: Boolean(event.thread_ts),
+        },
+        'slack.app_mention_received'
+      );
+
       // Authorization check
       const userId = event.user;
       if (!isSlackUserAuthorized(userId, this.allowedUserIds)) {
-        const maskedId = userId ? `${userId.slice(0, 4)}***` : 'unknown';
-        getLog().info({ maskedUserId: maskedId }, 'slack.unauthorized_message');
+        getLog().info({ maskedUserId: maskSlackUserId(userId) }, 'slack.unauthorized_message');
         return;
       }
 
@@ -421,38 +506,58 @@ export class SlackAdapter implements IPlatformAdapter {
     this.app.event('message', async ({ event }) => {
       // Only handle DM messages (channel type 'im')
       // Skip if this is a message in a channel (requires @mention via app_mention)
-      // The 'channel_type' is on certain event subtypes
-      const channelType = (event as { channel_type?: string }).channel_type;
-      if (channelType !== 'im') {
+      const message = event as SlackMessagePayload;
+      getLog().debug(
+        {
+          maskedUserId: maskSlackUserId(message.user),
+          channel: message.channel,
+          channelType: message.channel_type ?? 'unknown',
+          hasText: Boolean(message.text),
+          hasBotId: Boolean(message.bot_id),
+        },
+        'slack.message_event_received'
+      );
+
+      if (!isDirectMessageEvent(message)) {
         return;
       }
 
+      getLog().info(
+        {
+          maskedUserId: maskSlackUserId(message.user),
+          channel: message.channel,
+          channelType: message.channel_type ?? 'unknown',
+          hasText: Boolean(message.text),
+          hasThreadTs: Boolean(message.thread_ts),
+        },
+        'slack.dm_received'
+      );
+
       // Skip bot messages to prevent loops
-      if ('bot_id' in event && event.bot_id) {
+      if (message.bot_id) {
         return;
       }
 
       // Authorization check
-      const userId = 'user' in event ? event.user : undefined;
+      const userId = message.user;
       if (!isSlackUserAuthorized(userId, this.allowedUserIds)) {
-        const maskedId = userId ? `${userId.slice(0, 4)}***` : 'unknown';
-        getLog().info({ maskedUserId: maskedId }, 'slack.unauthorized_dm');
+        getLog().info({ maskedUserId: maskSlackUserId(userId) }, 'slack.unauthorized_dm');
         return;
       }
 
-      if (this.messageHandler && 'text' in event && event.text) {
+      if (this.messageHandler && message.text && message.channel && message.ts) {
         const displayName = userId ? await this.fetchDisplayName(userId) : undefined;
         const messageEvent: SlackMessageEvent = {
-          text: event.text,
+          text: message.text,
           user: userId ?? '',
-          channel: event.channel,
-          ts: event.ts,
-          thread_ts: 'thread_ts' in event ? event.thread_ts : undefined,
+          channel: message.channel,
+          ts: message.ts,
+          thread_ts: message.thread_ts,
           displayName,
         };
         this.trackTrigger(this.getConversationId(messageEvent), {
-          channel: event.channel,
-          ts: event.ts,
+          channel: message.channel,
+          ts: message.ts,
         });
         void this.messageHandler(messageEvent);
       }

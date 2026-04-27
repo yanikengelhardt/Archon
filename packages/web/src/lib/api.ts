@@ -436,6 +436,24 @@ export async function listCommands(cwd?: string): Promise<CommandEntry[]> {
   return result.commands;
 }
 
+export interface HubStatsPeriod {
+  runs: number;
+  completed: number;
+  failed: number;
+  tokens_input: number;
+  tokens_output: number;
+  by_workflow: { name: string; tokens_input: number; tokens_output: number }[];
+}
+
+export interface HubStats {
+  today: HubStatsPeriod;
+  week: HubStatsPeriod;
+}
+
+export async function getHubStats(): Promise<HubStats> {
+  return fetchJSON('/api/stats');
+}
+
 export async function getConfig(): Promise<{ config: SafeConfigResponse; database: string }> {
   return fetchJSON('/api/config');
 }

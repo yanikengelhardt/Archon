@@ -1086,3 +1086,81 @@ export async function deleteWorkflowRun(id: string): Promise<void> {
     throw new Error(`Failed to delete workflow run: ${err.message}`);
   }
 }
+
+export interface WorkflowStatsPeriod {
+  runs: number;
+  completed: number;
+  failed: number;
+  tokens_input: number;
+  tokens_output: number;
+  by_workflow: { name: string; tokens_input: number; tokens_output: number }[];
+}
+
+/**
+ * Aggregate workflow run stats since a given date.
+ * Token counts are read from metadata.token_summary written by the DAG executor.
+ * Runs without token data contribute 0 to token totals.
+ */
+export async function getWorkflowStats(since: Date): Promise<WorkflowStatsPeriod> {
+  const inputExpr =
+    getDatabaseType() === 'postgresql'
+      ? "COALESCE((metadata->'token_summary'->>'input')::BIGINT, 0)"
+      : "COALESCE(CAST(json_extract(metadata, '$.token_summary.input') AS INTEGER), 0)";
+  const outputExpr =
+    getDatabaseType() === 'postgresql'
+      ? "COALESCE((metadata->'token_summary'->>'output')::BIGINT, 0)"
+      : "COALESCE(CAST(json_extract(metadata, '$.token_summary.output') AS INTEGER), 0)";
+
+  try {
+    const [totalsResult, byWorkflowResult] = await Promise.all([
+      pool.query<{
+        runs: string;
+        completed: string;
+        failed: string;
+        tokens_input: string;
+        tokens_output: string;
+      }>(
+        `SELECT
+           COUNT(*) AS runs,
+           SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+           SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+           SUM(${inputExpr}) AS tokens_input,
+           SUM(${outputExpr}) AS tokens_output
+         FROM remote_agent_workflow_runs
+         WHERE started_at >= $1`,
+        [since.toISOString()]
+      ),
+      pool.query<{ name: string; tokens_input: string; tokens_output: string }>(
+        `SELECT
+           workflow_name AS name,
+           SUM(${inputExpr}) AS tokens_input,
+           SUM(${outputExpr}) AS tokens_output
+         FROM remote_agent_workflow_runs
+         WHERE started_at >= $1
+           AND (${inputExpr}) > 0
+         GROUP BY workflow_name
+         ORDER BY SUM(${inputExpr}) + SUM(${outputExpr}) DESC
+         LIMIT 20`,
+        [since.toISOString()]
+      ),
+    ]);
+
+    const row = totalsResult.rows[0];
+    return {
+      runs: Number(row?.runs ?? 0),
+      completed: Number(row?.completed ?? 0),
+      failed: Number(row?.failed ?? 0),
+      tokens_input: Number(row?.tokens_input ?? 0),
+      tokens_output: Number(row?.tokens_output ?? 0),
+      by_workflow: byWorkflowResult.rows.map(r => ({
+        name: r.name,
+        tokens_input: Number(r.tokens_input),
+        tokens_output: Number(r.tokens_output),
+      })),
+    };
+  } catch (error) {
+    const err = error as Error;
+    getLog().error({ err }, 'db.workflow_stats_failed');
+    throw new Error(`Failed to get workflow stats: ${err.message}`);
+  }
+}

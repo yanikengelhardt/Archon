@@ -251,6 +251,27 @@ export const dashboardRunsQuerySchema = z.object({
   offset: z.string().optional(),
 });
 
+const hubStatsPeriodSchema = z.object({
+  runs: z.number(),
+  completed: z.number(),
+  failed: z.number(),
+  tokens_input: z.number(),
+  tokens_output: z.number(),
+  by_workflow: z.array(
+    z.object({ name: z.string(), tokens_input: z.number(), tokens_output: z.number() })
+  ),
+});
+
+/** GET /api/stats response schema. */
+export const hubStatsSchema = z
+  .object({
+    today: hubStatsPeriodSchema,
+    week: hubStatsPeriodSchema,
+  })
+  .openapi('HubStats');
+
+export type HubStats = z.infer<typeof hubStatsSchema>;
+
 /** GET /api/workflows/runs query params. */
 export const workflowRunsQuerySchema = z.object({
   conversationId: z.string().optional(),

@@ -1,11 +1,12 @@
 import { NavLink, Link, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { LayoutDashboard, MessageSquare, Workflow, Settings, LogOut } from 'lucide-react';
+import { Command, LayoutDashboard, MessageSquare, Workflow, Settings, LogOut } from 'lucide-react';
 import { listDashboardRuns, getUpdateCheck, getAuthStatus } from '@/lib/api';
 import { useSession, signOut } from '@/lib/auth-client';
 import { cn } from '@/lib/utils';
 
 const tabs = [
+  { to: '/legacy/hub', end: true, icon: Command, label: 'Hub' },
   { to: '/legacy/chat', end: false, icon: MessageSquare, label: 'Chat' },
   { to: '/legacy/dashboard', end: true, icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/legacy/workflows', end: false, icon: Workflow, label: 'Workflows' },
