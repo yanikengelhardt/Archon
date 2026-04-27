@@ -9,7 +9,7 @@ export interface CommandCategory {
 const CATEGORY_PREFIXES: readonly { category: string; prefixes: string[] }[] = [
   {
     category: 'Investigation',
-    prefixes: ['investigate', 'web-research'],
+    prefixes: ['investigate', 'web-research', 'seo-research', 'research'],
   },
   {
     category: 'Planning',
@@ -41,6 +41,14 @@ const CATEGORY_PREFIXES: readonly { category: string; prefixes: string[] }[] = [
   {
     category: 'Validation',
     prefixes: ['validate'],
+  },
+  {
+    category: 'Release',
+    prefixes: ['release', 'changelog'],
+  },
+  {
+    category: 'Media',
+    prefixes: ['remotion', 'video'],
   },
 ];
 

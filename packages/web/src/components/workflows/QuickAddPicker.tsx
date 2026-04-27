@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Box, FileText, Terminal, Zap, Plug, ChevronRight } from 'lucide-react';
-import type { CommandEntry } from '@/lib/api';
+import type { CodebaseSkill, CommandEntry } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useClickOutside } from '@/hooks/useClickOutside';
 import { CommandPicker } from './CommandPicker';
@@ -13,6 +13,7 @@ interface QuickAddPickerProps {
   ) => void;
   onClose: () => void;
   commands: CommandEntry[];
+  skills: CodebaseSkill[];
 }
 
 type SubView = 'main' | 'command' | 'skill' | 'mcp';
@@ -22,6 +23,7 @@ export function QuickAddPicker({
   onAddNode,
   onClose,
   commands,
+  skills,
 }: QuickAddPickerProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -64,6 +66,10 @@ export function QuickAddPicker({
     onAddNode('command', { commandName });
   }
 
+  function handleSkillSelect(skillName: string): void {
+    onAddNode('prompt', { skills: [skillName] });
+  }
+
   // Command sub-picker
   if (subView === 'command') {
     return (
@@ -79,6 +85,15 @@ export function QuickAddPicker({
   // Skill / MCP input sub-view
   if (subView === 'skill' || subView === 'mcp') {
     const isSkill = subView === 'skill';
+    const filteredSkills = skills.filter(skill => {
+      const term = inputValue.trim().toLowerCase();
+      if (!term) return true;
+      return (
+        skill.name.toLowerCase().includes(term) ||
+        skill.displayName.toLowerCase().includes(term) ||
+        skill.description.toLowerCase().includes(term)
+      );
+    });
     return (
       <div
         ref={containerRef}
@@ -115,6 +130,25 @@ export function QuickAddPicker({
             placeholder={isSkill ? 'remotion-best-practices' : '.archon/mcp/ntfy.json'}
             className="w-full bg-surface border border-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-tertiary font-mono focus:outline-none focus:border-primary"
           />
+          {isSkill && filteredSkills.length > 0 && (
+            <div className="mt-2 max-h-44 overflow-auto rounded border border-border bg-surface">
+              {filteredSkills.map(skill => (
+                <button
+                  key={skill.name}
+                  type="button"
+                  onClick={(): void => {
+                    handleSkillSelect(skill.name);
+                  }}
+                  className="w-full px-2 py-1.5 text-left hover:bg-surface-hover"
+                >
+                  <div className="truncate text-xs text-text-primary">{skill.displayName}</div>
+                  <div className="truncate text-[10px] text-text-tertiary">
+                    {skill.category} - {skill.name}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
           <button
             type="button"
             disabled={!inputValue.trim()}

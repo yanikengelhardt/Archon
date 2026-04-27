@@ -212,6 +212,25 @@ export async function getCodebase(id: string): Promise<CodebaseResponse> {
   return fetchJSON<CodebaseResponse>(`/api/codebases/${id}`);
 }
 
+export type SkillSource = 'agents' | 'codex' | 'claude';
+
+export interface CodebaseSkill {
+  name: string;
+  displayName: string;
+  description: string;
+  category: string;
+  source: SkillSource;
+  sources: SkillSource[];
+  path: string;
+}
+
+export async function listCodebaseSkills(id: string): Promise<CodebaseSkill[]> {
+  const result = await fetchJSON<{ skills: CodebaseSkill[] }>(
+    `/api/codebases/${encodeURIComponent(id)}/skills`
+  );
+  return result.skills;
+}
+
 export async function addCodebase(
   input: { url: string } | { path: string }
 ): Promise<CodebaseResponse> {

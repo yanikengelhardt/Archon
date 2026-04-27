@@ -2,10 +2,11 @@ import { useState, useMemo } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import { categorizeCommands } from '@/lib/command-categories';
-import type { CommandEntry } from '@/lib/api';
+import type { CodebaseSkill, CommandEntry } from '@/lib/api';
 
 interface NodeLibraryProps {
   commands: CommandEntry[];
+  skills: CodebaseSkill[];
   isLoading: boolean;
 }
 
@@ -13,9 +14,14 @@ const NODE_TYPE_COLORS: Record<string, string> = {
   command: 'bg-node-command',
   prompt: 'bg-node-prompt',
   bash: 'bg-node-bash',
+  skill: 'bg-node-prompt',
 };
 
-function onDragStart(e: React.DragEvent, type: 'command' | 'prompt' | 'bash', name: string): void {
+function onDragStart(
+  e: React.DragEvent,
+  type: 'command' | 'prompt' | 'bash' | 'skill',
+  name: string
+): void {
   e.dataTransfer.setData('application/reactflow-type', type);
   e.dataTransfer.setData('application/reactflow-command', name);
   e.dataTransfer.effectAllowed = 'move';
@@ -36,7 +42,7 @@ function DraggableItem({
   name,
   displayName,
 }: {
-  type: 'command' | 'prompt' | 'bash';
+  type: 'command' | 'prompt' | 'bash' | 'skill';
   name: string;
   displayName: string;
 }): React.ReactElement {
@@ -85,10 +91,33 @@ function CollapsibleSection({
   );
 }
 
-export function NodeLibrary({ commands, isLoading }: NodeLibraryProps): React.ReactElement {
+function groupSkillsByCategory(
+  skills: CodebaseSkill[]
+): { name: string; skills: CodebaseSkill[] }[] {
+  const byCategory = new Map<string, CodebaseSkill[]>();
+  for (const skill of skills) {
+    const category = skill.category || 'Project Skills';
+    const list = byCategory.get(category);
+    if (list) {
+      list.push(skill);
+    } else {
+      byCategory.set(category, [skill]);
+    }
+  }
+
+  return [...byCategory.entries()]
+    .map(([name, items]) => ({
+      name,
+      skills: items.sort((a, b) => a.displayName.localeCompare(b.displayName)),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function NodeLibrary({ commands, skills, isLoading }: NodeLibraryProps): React.ReactElement {
   const [search, setSearch] = useState('');
 
   const categories = useMemo(() => categorizeCommands(commands), [commands]);
+  const skillCategories = useMemo(() => groupSkillsByCategory(skills), [skills]);
 
   const filteredCategories = useMemo(() => {
     if (!search.trim()) return categories;
@@ -100,6 +129,22 @@ export function NodeLibrary({ commands, isLoading }: NodeLibraryProps): React.Re
       }))
       .filter(cat => cat.commands.length > 0);
   }, [categories, search]);
+
+  const filteredSkillCategories = useMemo(() => {
+    if (!search.trim()) return skillCategories;
+    const term = search.toLowerCase();
+    return skillCategories
+      .map(cat => ({
+        ...cat,
+        skills: cat.skills.filter(
+          skill =>
+            skill.name.toLowerCase().includes(term) ||
+            skill.displayName.toLowerCase().includes(term) ||
+            skill.description.toLowerCase().includes(term)
+        ),
+      }))
+      .filter(cat => cat.skills.length > 0);
+  }, [skillCategories, search]);
 
   const showQuickNodes =
     !search.trim() ||
@@ -137,6 +182,25 @@ export function NodeLibrary({ commands, isLoading }: NodeLibraryProps): React.Re
               </CollapsibleSection>
             )}
 
+            {/* Skill categories */}
+            {filteredSkillCategories.map(category => (
+              <CollapsibleSection
+                key={`skills-${category.name}`}
+                title={`Skills: ${category.name}`}
+                count={category.skills.length}
+                defaultOpen={category.name === 'Project Skills'}
+              >
+                {category.skills.map(skill => (
+                  <DraggableItem
+                    key={skill.name}
+                    type="skill"
+                    name={skill.name}
+                    displayName={skill.displayName}
+                  />
+                ))}
+              </CollapsibleSection>
+            ))}
+
             {/* Command categories */}
             {filteredCategories.map(category => (
               <CollapsibleSection
@@ -156,9 +220,13 @@ export function NodeLibrary({ commands, isLoading }: NodeLibraryProps): React.Re
               </CollapsibleSection>
             ))}
 
-            {filteredCategories.length === 0 && !showQuickNodes && (
-              <p className="text-xs text-text-tertiary px-2 py-4 text-center">No matching nodes</p>
-            )}
+            {filteredCategories.length === 0 &&
+              filteredSkillCategories.length === 0 &&
+              !showQuickNodes && (
+                <p className="text-xs text-text-tertiary px-2 py-4 text-center">
+                  No matching nodes
+                </p>
+              )}
           </div>
         </ScrollArea>
       )}

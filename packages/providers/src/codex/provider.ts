@@ -10,6 +10,8 @@ import {
   type TurnCompletedEvent,
   type ThreadStartedEvent,
 } from '@openai/codex-sdk';
+import { existsSync, readdirSync, readFileSync, type Dirent } from 'fs';
+import { join } from 'path';
 import type {
   IAgentProvider,
   SendQueryOptions,
@@ -213,6 +215,68 @@ function buildCodexMcpConfigOverrides(
 const CODEX_MODEL_FALLBACKS: Record<string, string> = {
   'gpt-5.3-codex': 'gpt-5.2-codex',
 };
+
+function findSkillMarkdown(root: string, skillName: string, depth = 0): string | undefined {
+  if (depth > 3) return undefined;
+
+  const directPath = join(root, skillName, 'SKILL.md');
+  if (existsSync(directPath)) return directPath;
+
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(root, { withFileTypes: true, encoding: 'utf8' });
+  } catch {
+    return undefined;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const found = findSkillMarkdown(join(root, entry.name), skillName, depth + 1);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function resolveSkillInstruction(cwd: string, skillName: string): string | undefined {
+  const roots = [
+    join(cwd, '.agents', 'skills'),
+    join(cwd, '.codex', 'skills'),
+    join(cwd, '.claude', 'skills'),
+  ];
+
+  for (const root of roots) {
+    const skillPath = findSkillMarkdown(root, skillName);
+    if (skillPath) {
+      return readFileSync(skillPath, 'utf-8');
+    }
+  }
+
+  return undefined;
+}
+
+function buildSkillPromptPrefix(cwd: string, skillNames: string[] | undefined): string {
+  if (!skillNames || skillNames.length === 0) return '';
+
+  const blocks: string[] = [];
+  const missing: string[] = [];
+  for (const skillName of [...new Set(skillNames)]) {
+    const instruction = resolveSkillInstruction(cwd, skillName);
+    if (instruction) {
+      blocks.push(`## Skill: ${skillName}\n\n${instruction.trim()}`);
+    } else {
+      missing.push(skillName);
+    }
+  }
+
+  const missingBlock =
+    missing.length > 0
+      ? `\n\nMissing requested skills: ${missing.join(', ')}. Continue without those skills.`
+      : '';
+
+  return blocks.length > 0
+    ? `Use the following skill instructions for this task.${missingBlock}\n\n${blocks.join('\n\n')}\n\n---\n\n`
+    : '';
+}
 
 function isModelAccessError(errorMessage: string): boolean {
   const m = errorMessage.toLowerCase();
@@ -756,6 +820,8 @@ export class CodexProvider implements IAgentProvider {
     for (const warning of providerWarnings) {
       yield { type: 'system', content: `⚠️ ${warning.message}` };
     }
+    const skillPromptPrefix = buildSkillPromptPrefix(cwd, requestOptions?.nodeConfig?.skills);
+    const effectivePrompt = skillPromptPrefix ? `${skillPromptPrefix}${prompt}` : prompt;
 
     // 1. Initialize SDK and build thread options
     const codex = await this.createCodexClient(
@@ -853,7 +919,7 @@ export class CodexProvider implements IAgentProvider {
 
         try {
           // 4. Run streamed turn
-          const result = await thread.runStreamed(prompt, turnOptions);
+          const result = await thread.runStreamed(effectivePrompt, turnOptions);
 
           // 5. Stream normalized events (fresh state per attempt to avoid dedup leaks)
           yield* withResumedOutcome(

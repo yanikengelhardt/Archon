@@ -87,6 +87,7 @@ import type { ApprovalContext, WorkflowRun } from '@archon/workflows/schemas/wor
 import type { MessageRow } from '@archon/core/schemas/message';
 import type { DashboardWorkflowRun } from '@archon/core/schemas/workflow-run';
 import { findMarkdownFilesRecursive } from '@archon/core/utils/commands';
+import { discoverCodebaseSkills } from '@archon/core/utils/skills';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -148,6 +149,7 @@ import {
   codebaseListResponseSchema,
   codebaseSchema,
   codebaseIdParamsSchema,
+  codebaseSkillsResponseSchema,
   addCodebaseBodySchema,
   deleteCodebaseResponseSchema,
   codebaseEnvVarsResponseSchema,
@@ -527,6 +529,22 @@ const getCodebaseRoute = createRoute({
     200: {
       content: { 'application/json': { schema: codebaseSchema } },
       description: 'Codebase',
+    },
+    404: jsonError('Not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+const listCodebaseSkillsRoute = createRoute({
+  method: 'get',
+  path: '/api/codebases/{id}/skills',
+  tags: ['Codebases'],
+  summary: 'List skills discovered for a codebase',
+  request: { params: codebaseIdParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: codebaseSkillsResponseSchema } },
+      description: 'Discovered skills',
     },
     404: jsonError('Not found'),
     500: jsonError('Server error'),
@@ -2876,6 +2894,22 @@ export function registerApiRoutes(
     } catch (error) {
       getLog().error({ err: error }, 'get_codebase_failed');
       return apiError(c, 500, 'Failed to get codebase');
+    }
+  });
+
+  // GET /api/codebases/:id/skills - List discovered project skills
+  registerOpenApiRoute(listCodebaseSkillsRoute, async c => {
+    const id = c.req.param('id') ?? '';
+    try {
+      const codebase = await codebaseDb.getCodebase(id);
+      if (!codebase) {
+        return apiError(c, 404, 'Codebase not found');
+      }
+      const skills = await discoverCodebaseSkills(codebase.default_cwd);
+      return c.json({ skills });
+    } catch (error) {
+      getLog().error({ err: error, codebaseId: id }, 'list_codebase_skills_failed');
+      return apiError(c, 500, 'Failed to list codebase skills');
     }
   });
 

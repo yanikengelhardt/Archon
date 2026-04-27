@@ -16,15 +16,18 @@ import type {
   OnEdgesChange,
   NodeTypes,
 } from '@xyflow/react';
-import type { CommandEntry, DagNode } from '@/lib/api';
+import type { CodebaseSkill, CommandEntry, DagNode } from '@/lib/api';
 import { dagNodeComponent, type DagFlowNode } from './DagNodeComponent';
 import { QuickAddPicker } from './QuickAddPicker';
 
 export { dagNodesToReactFlow } from '@/lib/dag-layout';
 
-function resolveNodeLabel(nodeType: 'command' | 'prompt' | 'bash', commandName: string): string {
+type CanvasDropType = 'command' | 'prompt' | 'bash' | 'skill';
+
+function resolveNodeLabel(nodeType: CanvasDropType, commandName: string): string {
   if (nodeType === 'command') return commandName;
   if (nodeType === 'bash') return 'Shell';
+  if (nodeType === 'skill') return commandName;
   return 'Prompt';
 }
 
@@ -86,6 +89,7 @@ interface WorkflowCanvasProps {
   onDirty: () => void;
   onPushSnapshot?: () => void;
   commands: CommandEntry[];
+  skills: CodebaseSkill[];
 }
 
 interface QuickAddPosition {
@@ -105,6 +109,7 @@ export function WorkflowCanvas({
   onDirty,
   onPushSnapshot,
   commands,
+  skills,
 }: WorkflowCanvasProps): React.ReactElement {
   const { screenToFlowPosition } = useReactFlow();
   const [quickAddPosition, setQuickAddPosition] = useState<QuickAddPosition | null>(null);
@@ -158,8 +163,9 @@ export function WorkflowCanvas({
       const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       const id = `node-${crypto.randomUUID()}`;
 
-      const nodeType = type as 'command' | 'prompt' | 'bash';
+      const nodeType = type as CanvasDropType;
       const label = resolveNodeLabel(nodeType, command);
+      const dataNodeType = nodeType === 'skill' ? 'prompt' : nodeType;
 
       const newNode: DagFlowNode = {
         id,
@@ -168,7 +174,8 @@ export function WorkflowCanvas({
         data: {
           id,
           label,
-          nodeType,
+          nodeType: dataNodeType,
+          ...(nodeType === 'skill' && command ? { skills: [command] } : {}),
         },
       };
 
@@ -379,6 +386,7 @@ export function WorkflowCanvas({
           onAddNode={handleQuickAddNode}
           onClose={handleQuickAddClose}
           commands={commands}
+          skills={skills}
         />
       )}
 

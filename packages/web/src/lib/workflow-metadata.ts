@@ -111,17 +111,25 @@ export type WorkflowCategory =
   | 'All'
   | 'CI/CD'
   | 'Code Review'
+  | 'Research'
+  | 'Planning'
+  | 'Implementation'
+  | 'Release'
+  | 'Media'
   | 'Automation'
-  | 'Development'
-  | 'Other';
+  | 'Development';
 
 export const CATEGORIES: WorkflowCategory[] = [
   'All',
   'CI/CD',
   'Code Review',
+  'Research',
+  'Planning',
+  'Implementation',
+  'Release',
+  'Media',
   'Automation',
   'Development',
-  'Other',
 ];
 
 /**
@@ -134,6 +142,27 @@ export function getWorkflowCategory(name: string, description: string): Workflow
   // Code Review
   if (lower.includes('review')) {
     return 'Code Review';
+  }
+
+  if (
+    lower.includes('seo') ||
+    lower.includes('research') ||
+    lower.includes('triage') ||
+    lower.includes('investigate')
+  ) {
+    return 'Research';
+  }
+
+  if (lower.includes('plan') || lower.includes('prd') || lower.includes('architect')) {
+    return 'Planning';
+  }
+
+  if (lower.includes('release') || lower.includes('changelog')) {
+    return 'Release';
+  }
+
+  if (lower.includes('remotion') || lower.includes('video')) {
+    return 'Media';
   }
 
   // CI/CD — validation, testing (word-boundary for short tokens)
@@ -152,20 +181,16 @@ export function getWorkflowCategory(name: string, description: string): Workflow
     return 'Automation';
   }
 
-  // Development — feature, implement, plan, architect, assist
-  if (
-    lower.includes('feature') ||
-    lower.includes('implement') ||
-    lower.includes('plan') ||
-    lower.includes('architect') ||
-    lower.includes('assist') ||
-    lower.includes('idea-to-pr') ||
-    lower.includes('remotion')
-  ) {
+  // Development — feature, assist, idea-to-pr
+  if (lower.includes('feature') || lower.includes('assist') || lower.includes('idea-to-pr')) {
     return 'Development';
   }
 
-  return 'Other';
+  if (lower.includes('implement') || lower.includes('fix-issue') || lower.includes('fix-github')) {
+    return 'Implementation';
+  }
+
+  return 'Development';
 }
 
 /**
@@ -240,6 +265,16 @@ export function getWorkflowIconName(name: string, category: WorkflowCategory): W
       return 'TestTube';
     case 'Automation':
       return 'Zap';
+    case 'Research':
+      return 'Eye';
+    case 'Planning':
+      return 'Lightbulb';
+    case 'Implementation':
+      return 'Wrench';
+    case 'Release':
+      return 'Rocket';
+    case 'Media':
+      return 'Rocket';
     case 'Development':
       return 'Rocket';
     default:

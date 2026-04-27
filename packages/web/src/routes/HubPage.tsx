@@ -17,7 +17,7 @@ import {
   deleteConversation,
   getAnalyticsSummary,
   listAnalyticsSessions,
-  listCommands,
+  listCodebaseSkills,
   listDashboardRuns,
   listWorkflows,
   runWorkflow,
@@ -27,6 +27,7 @@ import {
   type AnalyticsPeriod,
   type AnalyticsSessionUsage,
   type AnalyticsSummary,
+  type CodebaseSkill,
   type DashboardRunResponse,
   type WorkflowListEntry,
 } from '@/lib/api';
@@ -336,12 +337,12 @@ function RecentRuns({ runs }: { runs: DashboardRunResponse[] }): ReactElement {
 
 function QuickLaunch({
   workflows,
-  commands,
+  skills,
   onSelect,
   selected,
 }: {
   workflows: WorkflowListEntry[];
-  commands: string[];
+  skills: CodebaseSkill[];
   onSelect: (s: Selection | null) => void;
   selected: Selection | null;
 }): ReactElement {
@@ -412,28 +413,29 @@ function QuickLaunch({
         </div>
       )}
 
-      {commands.length > 0 && (
+      {skills.length > 0 && (
         <div>
           <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">
             Skills
           </p>
           <div className="flex flex-wrap gap-1.5">
-            {commands.map(name => {
-              const isSelected = selected?.name === name && selected.type === 'skill';
+            {skills.map(skill => {
+              const isSelected = selected?.name === skill.name && selected.type === 'skill';
               return (
                 <button
-                  key={name}
+                  key={skill.name}
                   type="button"
                   onClick={(): void => {
-                    toggle(name, 'skill', name);
+                    toggle(skill.name, 'skill', skill.displayName);
                   }}
                   className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
                     isSelected
                       ? 'bg-primary text-white'
                       : 'bg-surface-elevated text-text-secondary hover:bg-surface-inset hover:text-text-primary'
                   }`}
+                  title={skill.description || skill.path}
                 >
-                  {name}
+                  {skill.displayName}
                 </button>
               );
             })}
@@ -505,16 +507,11 @@ export function HubPage(): ReactElement {
     [allWorkflows, localProjectId]
   );
 
-  const { data: commandEntries = [] } = useQuery({
-    queryKey: ['commands', selectedCwd ?? null],
-    queryFn: () => listCommands(selectedCwd),
+  const { data: skills = [] } = useQuery({
+    queryKey: ['codebase-skills', localProjectId],
+    queryFn: () => listCodebaseSkills(localProjectId ?? ''),
+    enabled: Boolean(localProjectId),
   });
-
-  const commands = useMemo(
-    () =>
-      commandEntries.filter(e => (localProjectId ? e.source === 'project' : true)).map(e => e.name),
-    [commandEntries, localProjectId]
-  );
 
   const { data: runsData } = useQuery({
     queryKey: ['dashboardRuns', { limit: 10, forHub: true }],
@@ -539,7 +536,7 @@ export function HubPage(): ReactElement {
       if (selected.type === 'workflow') {
         await runWorkflow(selected.name, conversationId, runMessage.trim());
       } else {
-        await sendMessage(conversationId, `/${selected.name} ${runMessage.trim()}`);
+        await sendMessage(conversationId, `$${selected.name} ${runMessage.trim()}`);
       }
 
       started = true;
@@ -686,7 +683,7 @@ export function HubPage(): ReactElement {
               </div>
               <QuickLaunch
                 workflows={workflows}
-                commands={commands}
+                skills={skills}
                 onSelect={s => {
                   setSelected(s);
                   setRunMessage('');
@@ -755,7 +752,7 @@ export function HubPage(): ReactElement {
               }}
               placeholder={
                 selected.type === 'skill'
-                  ? `Arguments for /${selected.name}...`
+                  ? `Prompt for $${selected.name}...`
                   : 'Enter a message for this workflow...'
               }
               className="min-w-0 flex-1 rounded-md border border-border bg-surface px-3 py-1.5 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"

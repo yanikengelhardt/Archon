@@ -9,12 +9,13 @@ import { useProject } from '@/contexts/ProjectContext';
 import {
   getWorkflow,
   listCommands,
+  listCodebaseSkills,
   validateWorkflow,
   saveWorkflow,
   createConversation,
   runWorkflow,
 } from '@/lib/api';
-import type { CommandEntry } from '@/lib/api';
+import type { CodebaseSkill, CommandEntry } from '@/lib/api';
 import { dagNodesToReactFlow } from '@/lib/dag-layout';
 import { useBuilderKeyboard } from '@/hooks/useBuilderKeyboard';
 import { useBuilderUndo } from '@/hooks/useBuilderUndo';
@@ -37,9 +38,11 @@ const NODE_LIBRARY_DEFAULT_WIDTH = 208; // w-52
 
 function NodeLibraryPanel({
   commands,
+  skills,
   isLoading,
 }: {
   commands: CommandEntry[];
+  skills: CodebaseSkill[];
   isLoading: boolean;
 }): React.ReactElement {
   const [width, setWidth] = useState(() => {
@@ -99,7 +102,7 @@ function NodeLibraryPanel({
   return (
     <div className="relative shrink-0 h-full overflow-hidden flex" style={{ width }}>
       <div className="flex-1 overflow-hidden">
-        <NodeLibrary commands={commands} isLoading={isLoading} />
+        <NodeLibrary commands={commands} skills={skills} isLoading={isLoading} />
       </div>
       {/* Drag handle */}
       <div
@@ -155,6 +158,17 @@ function WorkflowBuilderInner(): React.ReactElement {
     queryFn: () => listCommands(cwd),
   });
   const commandList: CommandEntry[] = commands ?? [];
+
+  const {
+    data: skills,
+    isError: skillsError,
+    isLoading: skillsLoading,
+  } = useQuery({
+    queryKey: ['codebase-skills', selectedProjectId],
+    queryFn: () => listCodebaseSkills(selectedProjectId ?? ''),
+    enabled: Boolean(selectedProjectId),
+  });
+  const skillList: CodebaseSkill[] = skills ?? [];
 
   const { pushSnapshot, undo, redo } = useBuilderUndo();
   const { zoom } = useViewport();
@@ -483,10 +497,21 @@ function WorkflowBuilderInner(): React.ReactElement {
           Failed to load commands. Command palette and dropdowns may be empty.
         </div>
       )}
+      {skillsError && (
+        <div className="px-4 py-1.5 text-xs text-error bg-surface-inset border-b border-border">
+          Failed to load skills. Skill nodes may be unavailable.
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel: Node Library */}
-        {showLibrary && <NodeLibraryPanel commands={commandList} isLoading={commandsLoading} />}
+        {showLibrary && (
+          <NodeLibraryPanel
+            commands={commandList}
+            skills={skillList}
+            isLoading={commandsLoading || skillsLoading}
+          />
+        )}
 
         {/* Center area */}
         <div className="flex-1 relative overflow-hidden flex">
@@ -507,6 +532,7 @@ function WorkflowBuilderInner(): React.ReactElement {
                   onDirty={markDirty}
                   onPushSnapshot={pushSnapshotLatest}
                   commands={commandList}
+                  skills={skillList}
                 />
               </div>
 

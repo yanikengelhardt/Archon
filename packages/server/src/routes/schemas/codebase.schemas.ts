@@ -18,6 +18,22 @@ export const codebaseListResponseSchema = z.array(codebaseSchema).openapi('Codeb
 /** Path params for routes with :id (codebase ID). */
 export const codebaseIdParamsSchema = z.object({ id: z.string() });
 
+export const codebaseSkillSchema = z
+  .object({
+    name: z.string(),
+    displayName: z.string(),
+    description: z.string(),
+    category: z.string(),
+    source: z.enum(['agents', 'codex', 'claude']),
+    sources: z.array(z.enum(['agents', 'codex', 'claude'])),
+    path: z.string(),
+  })
+  .openapi('CodebaseSkill');
+
+export const codebaseSkillsResponseSchema = z
+  .object({ skills: z.array(codebaseSkillSchema) })
+  .openapi('CodebaseSkillsResponse');
+
 /** POST /api/codebases request body. Exactly one of url or path must be provided. */
 export const addCodebaseBodySchema = z
   .object({

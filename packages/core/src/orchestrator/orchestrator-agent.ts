@@ -330,6 +330,11 @@ function findCodebaseByName(
   });
 }
 
+function extractExplicitSkillMentions(message: string): string[] {
+  const mentions = [...message.matchAll(/\$([A-Za-z][A-Za-z0-9_-]*)/g)].map(match => match[1]);
+  return [...new Set(mentions)];
+}
+
 /**
  * Resolve a codebase by name using 4-tier fuzzy matching.
  * Tiers: exact → case-insensitive → prefix → substring.
@@ -1297,6 +1302,10 @@ export async function handleMessage(
       // Non-critical — continue without context
     }
 
+    const scopedCodebase = conversation.codebase_id
+      ? codebases.find(cb => cb.id === conversation.codebase_id)
+      : undefined;
+
     const fullPrompt = buildFullPrompt(
       message,
       issueContext,
@@ -1472,11 +1481,16 @@ export async function handleMessage(
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: systemAppend }
         : systemAppend;
 
+    const explicitSkillMentions =
+      providerKey === 'codex' ? extractExplicitSkillMentions(message) : [];
     const requestOptions: SendQueryOptions = {
       assistantConfig: { ...(config.assistants[providerKey] ?? {}) },
       env: Object.keys(effectiveEnv).length > 0 ? effectiveEnv : undefined,
       model: chatRequest.model,
       systemPrompt,
+      ...(explicitSkillMentions.length > 0
+        ? { nodeConfig: { skills: explicitSkillMentions } }
+        : {}),
     };
     if (chatRequest.preset) {
       applyPresetToRequestOptions(providerKey, chatRequest.preset, requestOptions);

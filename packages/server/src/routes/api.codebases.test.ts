@@ -35,6 +35,17 @@ const mockRegisterRepository = mock(async (_path: string) => ({
 const mockListByCodebase = mock(async (_id: string) => [] as unknown[]);
 const mockRemoveWorktree = mock(async () => {});
 const mockUpdateStatus = mock(async (_id: string, _status: string) => {});
+const mockDiscoverCodebaseSkills = mock(async (_cwd: string) => [
+  {
+    name: 'seo-review',
+    displayName: 'SEO Review',
+    description: 'Review SEO research.',
+    category: 'SEO Research',
+    source: 'codex' as const,
+    sources: ['codex' as const],
+    path: '/repo/.codex/skills/seo-research/seo-review',
+  },
+]);
 
 mock.module('@archon/core', () => ({
   handleMessage: mock(async () => {}),
@@ -155,6 +166,10 @@ mock.module('@archon/core/db/messages', () => ({
 
 mock.module('@archon/core/utils/commands', () => ({
   findMarkdownFilesRecursive: mock(async () => []),
+}));
+
+mock.module('@archon/core/utils/skills', () => ({
+  discoverCodebaseSkills: mockDiscoverCodebaseSkills,
 }));
 
 // Import the module under test AFTER all mock.module() calls
@@ -370,6 +385,47 @@ describe('GET /api/codebases/:id', () => {
 
     const body = (await response.json()) as { error: string };
     expect(body.error).toContain('Failed to get codebase');
+  });
+});
+
+describe('GET /api/codebases/:id/skills', () => {
+  beforeEach(() => {
+    mockGetCodebase.mockReset();
+    mockDiscoverCodebaseSkills.mockClear();
+  });
+
+  test('returns discovered skills for the codebase cwd', async () => {
+    mockGetCodebase.mockImplementationOnce(async () => MOCK_CODEBASE);
+    const app = makeApp();
+
+    const response = await app.request('/api/codebases/codebase-uuid-1/skills');
+    const body = (await response.json()) as {
+      skills: { name: string; category: string; source: string }[];
+    };
+
+    expect(response.status).toBe(200);
+    expect(mockDiscoverCodebaseSkills).toHaveBeenCalledWith(MOCK_CODEBASE.default_cwd);
+    expect(body.skills).toEqual([
+      {
+        name: 'seo-review',
+        displayName: 'SEO Review',
+        description: 'Review SEO research.',
+        category: 'SEO Research',
+        source: 'codex',
+        sources: ['codex'],
+        path: '/repo/.codex/skills/seo-research/seo-review',
+      },
+    ]);
+  });
+
+  test('returns 404 when codebase is missing', async () => {
+    mockGetCodebase.mockImplementationOnce(async () => null);
+    const app = makeApp();
+
+    const response = await app.request('/api/codebases/unknown-id/skills');
+
+    expect(response.status).toBe(404);
+    expect(mockDiscoverCodebaseSkills).not.toHaveBeenCalled();
   });
 });
 

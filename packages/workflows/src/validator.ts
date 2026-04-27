@@ -11,7 +11,8 @@
 
 import { join, resolve, isAbsolute } from 'path';
 import { homedir } from 'os';
-import { access, readFile } from 'fs/promises';
+import { access, readFile, readdir } from 'fs/promises';
+import type { Dirent } from 'fs';
 import {
   createLogger,
   getCommandFolderSearchPaths,
@@ -136,6 +137,24 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function skillExistsInRoot(root: string, skillName: string, depth = 0): Promise<boolean> {
+  if (depth > 3) return false;
+  if (await fileExists(join(root, skillName, 'SKILL.md'))) return true;
+
+  let entries: Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true, encoding: 'utf8' });
+  } catch {
+    return false;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (await skillExistsInRoot(join(root, entry.name), skillName, depth + 1)) return true;
+  }
+  return false;
 }
 
 /**
@@ -468,19 +487,26 @@ export async function validateWorkflowResources(
     // --- Skills nodes: check skill directories exist ---
     if ('skills' in node && Array.isArray(node.skills)) {
       for (const skillName of node.skills) {
-        const projectSkillPath = join(cwd, '.claude', 'skills', skillName, 'SKILL.md');
-        const userSkillPath = join(homedir(), '.claude', 'skills', skillName, 'SKILL.md');
+        const skillRoots = [
+          join(cwd, '.agents', 'skills'),
+          join(cwd, '.codex', 'skills'),
+          join(cwd, '.claude', 'skills'),
+          join(homedir(), '.agents', 'skills'),
+          join(homedir(), '.codex', 'skills'),
+          join(homedir(), '.claude', 'skills'),
+        ];
 
-        const projectExists = await fileExists(projectSkillPath);
-        const userExists = await fileExists(userSkillPath);
+        const skillExists = (
+          await Promise.all(skillRoots.map(root => skillExistsInRoot(root, skillName)))
+        ).some(Boolean);
 
-        if (!projectExists && !userExists) {
+        if (!skillExists) {
           issues.push({
             level: 'warning',
             nodeId: node.id,
             field: 'skills',
-            message: `Skill '${skillName}' not found in .claude/skills/ or ~/.claude/skills/`,
-            hint: `Install with: npx skills add <repo> — or create manually at .claude/skills/${skillName}/SKILL.md`,
+            message: `Skill '${skillName}' not found in project or user skill folders`,
+            hint: `Create it under .agents/skills/${skillName}/, .codex/skills/${skillName}/, or .claude/skills/${skillName}/ with a SKILL.md file`,
           });
         }
       }
