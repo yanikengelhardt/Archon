@@ -55,12 +55,27 @@ export interface AnalyticsUserMessageInput {
   readonly rawEvent?: string | null;
 }
 
+export interface AnalyticsSourceFileInput {
+  readonly agent: AnalyticsAgent;
+  readonly sourceFile: string;
+  readonly sizeBytes: number;
+  readonly mtimeMs: number;
+}
+
 export interface AnalyticsSyncBatch {
   readonly sessions: readonly AnalyticsSessionInput[];
   readonly toolCalls: readonly AnalyticsToolCallInput[];
   readonly tokenUsages: readonly AnalyticsTokenUsageInput[];
   readonly userMessages: readonly AnalyticsUserMessageInput[];
   readonly scannedSourceFiles: readonly string[];
+  readonly sourceFiles: readonly AnalyticsSourceFileInput[];
+}
+
+export interface AnalyticsSourceFileState {
+  readonly agent: AnalyticsAgent;
+  readonly sourceFile: string;
+  readonly sizeBytes: number;
+  readonly mtimeMs: number;
 }
 
 export interface AnalyticsAgentTotals {
@@ -466,6 +481,16 @@ export async function ensureAnalyticsTables(): Promise<void> {
         inserted_at TIMESTAMP DEFAULT NOW(),
         UNIQUE(agent, source_file, source_line, message_id)
       );
+
+      CREATE TABLE IF NOT EXISTS remote_agent_agent_source_files (
+        id TEXT PRIMARY KEY,
+        agent TEXT NOT NULL CHECK (agent IN ('claude', 'codex')),
+        source_file TEXT NOT NULL,
+        size_bytes BIGINT NOT NULL,
+        mtime_ms BIGINT NOT NULL,
+        scanned_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(agent, source_file)
+      );
     `);
   } else {
     await pool.query(`
@@ -534,6 +559,16 @@ export async function ensureAnalyticsTables(): Promise<void> {
         inserted_at TEXT DEFAULT (datetime('now')),
         UNIQUE(agent, source_file, source_line, message_id)
       );
+
+      CREATE TABLE IF NOT EXISTS remote_agent_agent_source_files (
+        id TEXT PRIMARY KEY,
+        agent TEXT NOT NULL CHECK (agent IN ('claude', 'codex')),
+        source_file TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        mtime_ms INTEGER NOT NULL,
+        scanned_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(agent, source_file)
+      );
     `);
   }
 
@@ -561,6 +596,34 @@ export async function ensureAnalyticsTables(): Promise<void> {
   await pool.query(
     'CREATE INDEX IF NOT EXISTS idx_agent_user_messages_created ON remote_agent_agent_user_messages(created_at)'
   );
+  await pool.query(
+    'CREATE INDEX IF NOT EXISTS idx_agent_source_files_agent ON remote_agent_agent_source_files(agent)'
+  );
+}
+
+export async function listAnalyticsSourceFileStates(): Promise<
+  readonly AnalyticsSourceFileState[]
+> {
+  await ensureAnalyticsTables();
+
+  const result = await pool.query<{
+    agent: AnalyticsAgent;
+    source_file: string;
+    size_bytes: number | string;
+    mtime_ms: number | string;
+  }>(
+    `SELECT agent, source_file, size_bytes, mtime_ms
+     FROM remote_agent_agent_source_files`
+  );
+
+  return result.rows
+    .filter(row => isAnalyticsAgent(row.agent))
+    .map(row => ({
+      agent: row.agent,
+      sourceFile: row.source_file,
+      sizeBytes: Number(row.size_bytes),
+      mtimeMs: Number(row.mtime_ms),
+    }));
 }
 
 export async function upsertAnalyticsBatch(batch: AnalyticsSyncBatch): Promise<void> {
@@ -689,6 +752,25 @@ export async function upsertAnalyticsBatch(batch: AnalyticsSyncBatch): Promise<v
           message.sourceFile,
           message.sourceLine,
           message.rawEvent ?? null,
+        ]
+      );
+    }
+
+    for (const sourceFile of batch.sourceFiles) {
+      await query(
+        `INSERT INTO remote_agent_agent_source_files
+          (id, agent, source_file, size_bytes, mtime_ms)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT(agent, source_file) DO UPDATE SET
+          size_bytes = excluded.size_bytes,
+          mtime_ms = excluded.mtime_ms,
+          scanned_at = CURRENT_TIMESTAMP`,
+        [
+          crypto.randomUUID(),
+          sourceFile.agent,
+          sourceFile.sourceFile,
+          sourceFile.sizeBytes,
+          sourceFile.mtimeMs,
         ]
       );
     }

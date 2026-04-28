@@ -625,6 +625,16 @@ export class SqliteAdapter implements IDatabase {
         UNIQUE(agent, source_file, source_line, message_id)
       );
 
+      CREATE TABLE IF NOT EXISTS remote_agent_agent_source_files (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        agent TEXT NOT NULL CHECK (agent IN ('claude', 'codex')),
+        source_file TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        mtime_ms INTEGER NOT NULL,
+        scanned_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(agent, source_file)
+      );
+
       -- Indexes
       CREATE INDEX IF NOT EXISTS idx_codebase_env_vars_codebase_id ON remote_agent_codebase_env_vars(codebase_id);
       CREATE INDEX IF NOT EXISTS idx_conversations_platform ON remote_agent_conversations(platform_type, platform_conversation_id);
@@ -673,6 +683,8 @@ export class SqliteAdapter implements IDatabase {
         ON remote_agent_agent_user_messages(agent, provider_session_id);
       CREATE INDEX IF NOT EXISTS idx_agent_user_messages_created
         ON remote_agent_agent_user_messages(created_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_source_files_agent
+        ON remote_agent_agent_source_files(agent);
 
       -- User identity index. user_identities is a new table created above
       -- so its user_id column always exists. Indexes for the user_id columns

@@ -1,16 +1,23 @@
-import { readdir, readFile, stat } from 'fs/promises';
+import { createReadStream } from 'fs';
+import { readdir, stat } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
+import { createInterface } from 'readline';
 import { createLogger } from '@archon/paths';
 import type {
   AnalyticsAgent,
+  AnalyticsSourceFileInput,
   AnalyticsSessionInput,
   AnalyticsSyncBatch,
   AnalyticsTokenUsageInput,
   AnalyticsToolCallInput,
   AnalyticsUserMessageInput,
 } from '@archon/core/db/analytics';
-import { ensureAnalyticsTables, upsertAnalyticsBatch } from '@archon/core/db/analytics';
+import {
+  ensureAnalyticsTables,
+  listAnalyticsSourceFileStates,
+  upsertAnalyticsBatch,
+} from '@archon/core/db/analytics';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -58,11 +65,19 @@ interface ParsedUserMessage {
   readonly content: string;
 }
 
-const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
+interface JsonlFileCandidate {
+  readonly agent: AnalyticsAgent;
+  readonly path: string;
+  readonly sizeBytes: number;
+  readonly mtimeMs: number;
+}
+
+const DEFAULT_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const CAPTURE_RAW_EVENTS = process.env.ARCHON_ANALYTICS_RAW_EVENTS === '1';
 
 export async function startAnalyticsSyncer(
-  intervalMs = DEFAULT_INTERVAL_MS
+  intervalMs = getAnalyticsSyncIntervalMs()
 ): Promise<AnalyticsSyncer> {
   try {
     await ensureAnalyticsTables();
@@ -87,6 +102,8 @@ export async function startAnalyticsSyncer(
           toolCalls: batch.toolCalls.length,
           tokenUsages: batch.tokenUsages.length,
           userMessages: batch.userMessages.length,
+          sourceFiles: batch.sourceFiles.length,
+          intervalMs,
         },
         'analytics.sync_completed'
       );
@@ -115,23 +132,48 @@ export async function startAnalyticsSyncer(
   };
 }
 
+function getAnalyticsSyncIntervalMs(): number {
+  const raw = process.env.ARCHON_ANALYTICS_SYNC_INTERVAL_MS;
+  if (!raw) return DEFAULT_INTERVAL_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_INTERVAL_MS;
+}
+
 async function scanAnalyticsLogs(): Promise<AnalyticsSyncBatch> {
   const roots: readonly { agent: AnalyticsAgent; root: string }[] = [
     { agent: 'claude', root: join(homedir(), '.claude', 'projects') },
     { agent: 'codex', root: join(homedir(), '.codex', 'sessions') },
   ];
+  const knownFiles = new Map(
+    (await listAnalyticsSourceFileStates()).map(file => [
+      sourceFileStateKey(file.agent, file.sourceFile),
+      file,
+    ])
+  );
 
   const sessions: AnalyticsSessionInput[] = [];
   const toolCalls: AnalyticsToolCallInput[] = [];
   const tokenUsages: AnalyticsTokenUsageInput[] = [];
   const userMessages: AnalyticsUserMessageInput[] = [];
   const scannedSourceFiles: string[] = [];
+  const sourceFiles: AnalyticsSourceFileInput[] = [];
 
   for (const root of roots) {
-    const files = await findJsonlFiles(root.root);
+    const files = await findJsonlFiles(root.agent, root.root);
     for (const file of files) {
-      scannedSourceFiles.push(file);
-      const parsed = await parseJsonlFile(root.agent, file);
+      const known = knownFiles.get(sourceFileStateKey(file.agent, file.path));
+      if (known?.sizeBytes === file.sizeBytes && known.mtimeMs === file.mtimeMs) {
+        continue;
+      }
+
+      scannedSourceFiles.push(file.path);
+      sourceFiles.push({
+        agent: file.agent,
+        sourceFile: file.path,
+        sizeBytes: file.sizeBytes,
+        mtimeMs: file.mtimeMs,
+      });
+      const parsed = await parseJsonlFile(file);
       if (parsed.session) sessions.push(parsed.session);
       toolCalls.push(...parsed.toolCalls);
       tokenUsages.push(...parsed.tokenUsages);
@@ -139,10 +181,14 @@ async function scanAnalyticsLogs(): Promise<AnalyticsSyncBatch> {
     }
   }
 
-  return { sessions, toolCalls, tokenUsages, userMessages, scannedSourceFiles };
+  return { sessions, toolCalls, tokenUsages, userMessages, scannedSourceFiles, sourceFiles };
 }
 
-async function findJsonlFiles(root: string): Promise<string[]> {
+function sourceFileStateKey(agent: AnalyticsAgent, sourceFile: string): string {
+  return `${agent}:${sourceFile}`;
+}
+
+async function findJsonlFiles(agent: AnalyticsAgent, root: string): Promise<JsonlFileCandidate[]> {
   try {
     const rootStat = await stat(root);
     if (!rootStat.isDirectory()) return [];
@@ -150,7 +196,7 @@ async function findJsonlFiles(root: string): Promise<string[]> {
     return [];
   }
 
-  const results: string[] = [];
+  const results: JsonlFileCandidate[] = [];
   const stack = [root];
   while (stack.length > 0) {
     const current = stack.pop();
@@ -168,37 +214,36 @@ async function findJsonlFiles(root: string): Promise<string[]> {
       if (entry.isDirectory()) {
         stack.push(path);
       } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        results.push(path);
+        try {
+          const fileStat = await stat(path);
+          results.push({
+            agent,
+            path,
+            sizeBytes: fileStat.size,
+            mtimeMs: Math.round(fileStat.mtimeMs),
+          });
+        } catch (error) {
+          getLog().debug({ err: error as Error, path }, 'analytics.file_stat_failed');
+        }
       }
     }
   }
   return results;
 }
 
-async function parseJsonlFile(
-  agent: AnalyticsAgent,
-  sourceFile: string
-): Promise<{
+async function parseJsonlFile(file: JsonlFileCandidate): Promise<{
   readonly session: AnalyticsSessionInput | null;
   readonly toolCalls: readonly AnalyticsToolCallInput[];
   readonly tokenUsages: readonly AnalyticsTokenUsageInput[];
   readonly userMessages: readonly AnalyticsUserMessageInput[];
 }> {
-  let content: string;
-  let fileTimestamp = new Date(0).toISOString();
-  try {
-    const fileStat = await stat(sourceFile);
-    if (fileStat.size > MAX_FILE_BYTES) {
-      getLog().debug({ sourceFile, bytes: fileStat.size }, 'analytics.large_file_skipped');
-      return { session: null, toolCalls: [], tokenUsages: [], userMessages: [] };
-    }
-    fileTimestamp = fileStat.mtime.toISOString();
-    content = await readFile(sourceFile, 'utf-8');
-  } catch (error) {
-    getLog().debug({ err: error as Error, sourceFile }, 'analytics.read_file_failed');
+  const { agent, path: sourceFile } = file;
+  if (file.sizeBytes > MAX_FILE_BYTES) {
+    getLog().debug({ sourceFile, bytes: file.sizeBytes }, 'analytics.large_file_skipped');
     return { session: null, toolCalls: [], tokenUsages: [], userMessages: [] };
   }
 
+  const fileTimestamp = new Date(file.mtimeMs).toISOString();
   const toolCalls: AnalyticsToolCallInput[] = [];
   const tokenUsages: AnalyticsTokenUsageInput[] = [];
   const userMessages: AnalyticsUserMessageInput[] = [];
@@ -206,7 +251,12 @@ async function parseJsonlFile(
   let session: SessionAccumulator | null = null;
   let lineNumber = 0;
 
-  for (const line of content.split('\n')) {
+  const lines = createInterface({
+    input: createReadStream(sourceFile, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
+
+  for await (const line of lines) {
     lineNumber += 1;
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
@@ -236,7 +286,7 @@ async function parseJsonlFile(
         lastActivityAt: eventAt,
         hasRealTimestamp: timestamp !== undefined,
         messageCount: 0,
-        rawEvent: trimmed,
+        rawEvent: CAPTURE_RAW_EVENTS ? trimmed : null,
       };
     }
 
@@ -267,7 +317,7 @@ async function parseJsonlFile(
         createdAt: eventAt,
         sourceFile,
         sourceLine: lineNumber,
-        rawEvent: trimmed,
+        rawEvent: CAPTURE_RAW_EVENTS ? trimmed : null,
       });
     }
 
@@ -290,13 +340,21 @@ async function parseJsonlFile(
           eventAt,
           sourceFile,
           sourceLine: lineNumber,
-          rawEvent: trimmed,
+          rawEvent: CAPTURE_RAW_EVENTS ? trimmed : null,
         });
       }
     }
 
     toolCalls.push(
-      ...extractToolCalls(agent, providerSessionId, eventAt, sourceFile, lineNumber, event, trimmed)
+      ...extractToolCalls(
+        agent,
+        providerSessionId,
+        eventAt,
+        sourceFile,
+        lineNumber,
+        event,
+        CAPTURE_RAW_EVENTS ? trimmed : null
+      )
     );
   }
 
@@ -527,7 +585,7 @@ function extractToolCalls(
   sourceFile: string,
   sourceLine: number,
   event: JsonObject,
-  rawEvent: string
+  rawEvent: string | null
 ): AnalyticsToolCallInput[] {
   const calls: AnalyticsToolCallInput[] = [];
   const content = getAtPath(event, ['message', 'content']) ?? getAtPath(event, ['content']);
