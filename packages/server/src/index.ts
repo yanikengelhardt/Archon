@@ -101,6 +101,7 @@ import {
   getDecryptedAccessToken,
   type GitHubAuth,
   type IGitHubAppAuthProvider,
+  conversationDb,
 } from '@archon/core';
 import type { IPlatformAdapter } from '@archon/core';
 import type { IdentityPlatform } from '@archon/core';
@@ -635,6 +636,13 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
 
           // Get parent conversation ID for context inheritance
           parentConversationId = slackAdapter.getParentConversationId(event) ?? undefined;
+        } else {
+          const scopedConversation =
+            await conversationDb.findLatestScopedConversationByPlatformPrefix(
+              'slack',
+              `${event.channel}:`
+            );
+          parentConversationId = scopedConversation?.platform_conversation_id;
         }
 
         // Resolve Slack user → Archon user UUID. displayName comes from

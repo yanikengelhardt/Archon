@@ -980,7 +980,7 @@ async function executeNodeInternal(
 
       if (msg.type === 'assistant' && msg.content) {
         nodeOutputText += msg.content; // ALWAYS capture for $node_id.output
-        if (streamingMode === 'stream' || msg.flush) {
+        if (!node.silent && (streamingMode === 'stream' || msg.flush)) {
           // `flush` chunks (e.g. Pi notify() emitting a plannotator review URL)
           // must reach the user before the node blocks. Drain any queued batch
           // content first so order is preserved.
@@ -994,7 +994,7 @@ async function executeNodeInternal(
             batchMessages.length = 0;
           }
           await safeSendMessage(platform, conversationId, msg.content, nodeContext);
-        } else {
+        } else if (!node.silent) {
           batchMessages.push(msg.content);
         }
         await logAssistant(logDir, workflowRun.id, msg.content);
@@ -1551,7 +1551,7 @@ async function executeNodeInternal(
       return { state: 'failed', output: nodeOutputText, error: 'Cancelled by user' };
     }
 
-    if (streamingMode === 'batch' && batchMessages.length > 0) {
+    if (!node.silent && streamingMode === 'batch' && batchMessages.length > 0) {
       const batchContent =
         structuredOutput !== undefined && nodeOptions?.outputFormat
           ? nodeOutputText

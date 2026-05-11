@@ -201,6 +201,7 @@ export const dagNodeBaseSchema = z.object({
   // of guessing filenames. Valid on every node type (bash/script produce typed
   // outputs too) — not an AI-only field.
   output_type: z.string().min(1).optional(),
+  silent: z.boolean().optional(),
 });
 
 export type DagNodeBase = z.infer<typeof dagNodeBaseSchema>;

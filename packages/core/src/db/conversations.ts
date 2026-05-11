@@ -54,6 +54,28 @@ export async function getConversationByPlatformId(
   return result.rows[0] ?? null;
 }
 
+/**
+ * Find the most recent scoped conversation for a platform ID prefix.
+ * Used by adapters whose top-level messages create fresh conversation IDs
+ * while still belonging to a channel-level context.
+ */
+export async function findLatestScopedConversationByPlatformPrefix(
+  platformType: string,
+  platformIdPrefix: string
+): Promise<Conversation | null> {
+  const result = await pool.query<Conversation>(
+    `SELECT * FROM remote_agent_conversations
+     WHERE platform_type = $1
+       AND platform_conversation_id LIKE $2
+       AND codebase_id IS NOT NULL
+       AND deleted_at IS NULL
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+    [platformType, `${platformIdPrefix}%`]
+  );
+  return result.rows[0] ?? null;
+}
+
 export async function getOrCreateConversation(
   platformType: string,
   platformId: string,

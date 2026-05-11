@@ -2466,6 +2466,28 @@ async function handleWorkflowRunCommand(
     return;
   }
 
+  // Workflows that opt out of worktrees don't need a project — run directly.
+  if (workflow.worktree?.enabled === false) {
+    getLog().info(
+      { workflowName: workflow.name, conversationId },
+      'workflow.no_worktree_skipping_project_selection'
+    );
+    await executeWorkflow(
+      createWorkflowDeps(),
+      platform,
+      conversationId,
+      getArchonWorkspacesPath(),
+      workflow,
+      userMessage,
+      conversation.id,
+      undefined, // codebaseId — not required when worktree is disabled
+      undefined,
+      undefined,
+      conversation.id
+    );
+    return;
+  }
+
   // No project attached — apply E2 logic
   const codebases = await codebaseDb.listCodebases();
 
