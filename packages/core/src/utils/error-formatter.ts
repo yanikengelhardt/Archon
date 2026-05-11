@@ -13,6 +13,19 @@
  */
 export function classifyAndFormatError(error: Error): string {
   const message = error.message || '';
+  const normalized = message.trim().toLowerCase();
+
+  // Provider-specific "usage limit reached" messages that don't include "rate limit".
+  // Example: "You've hit your limit · resets 8pm (Europe/Berlin)"
+  if (normalized.includes('hit your limit') || normalized.includes('usage limit')) {
+    return '⚠️ AI rate limit reached. Please wait and try again later.';
+  }
+
+  // Some libraries (or non-Error throws) can surface meaningless messages like "success".
+  // Treat these as unknown errors to avoid confusing users.
+  if (normalized === 'success' || normalized === 'ok') {
+    return '⚠️ An unexpected error occurred. Try /reset to start a fresh session.';
+  }
 
   // AI/SDK errors - rate limits
   if (message.includes('rate limit') || message.includes('Rate limit')) {
@@ -73,6 +86,11 @@ export function classifyAndFormatError(error: Error): string {
   // Database errors
   if (message.includes('ECONNREFUSED') || message.includes('database')) {
     return '⚠️ Database connection issue. Please try again in a moment.';
+  }
+
+  // Git / isolation errors — non-git directory used as a codebase
+  if (message.includes('not a valid git repository') || message.includes('not a git repository')) {
+    return '⚠️ This project is not a valid git repository. Check your project settings.';
   }
 
   // Session errors

@@ -7,6 +7,7 @@
  * - Does NOT require a project to be selected before starting a conversation
  */
 import { existsSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { createLogger, captureChatTurn, captureApprovalResolved } from '@archon/paths';
 import type {
   IPlatformAdapter,
@@ -84,6 +85,24 @@ let cachedLog: ReturnType<typeof createLogger> | undefined;
 function getLog(): ReturnType<typeof createLogger> {
   if (!cachedLog) cachedLog = createLogger('orchestrator-agent');
   return cachedLog;
+}
+
+const GENERIC_UNEXPECTED_ERROR_MESSAGE =
+  '⚠️ An unexpected error occurred. Try /reset to start a fresh session.';
+
+function formatRateLimitUserMessage(rateLimitInfo: Record<string, unknown> | undefined): string {
+  if (!rateLimitInfo) {
+    return '⚠️ AI rate limit reached. Please wait a moment and try again.';
+  }
+
+  const resetsAt = rateLimitInfo.resetsAt;
+  if (typeof resetsAt === 'number' && Number.isFinite(resetsAt) && resetsAt > 0) {
+    const resetDate = new Date(resetsAt * 1000);
+    const resetLocal = resetDate.toLocaleString();
+    return `⚠️ AI rate limit reached. Resets at ${resetLocal}.`;
+  }
+
+  return '⚠️ AI rate limit reached. Please wait a moment and try again.';
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -860,6 +879,93 @@ interface DiscoverResult {
   codebase?: Codebase | null;
 }
 
+function extractPossibleWorkflowMentions(message: string): string[] {
+  const tokens = message
+    .toLowerCase()
+    .match(/[a-z0-9][a-z0-9-_]{2,}/g)
+    ?.filter(Boolean);
+  if (!tokens) return [];
+
+  // Preserve order but de-dup to keep the list small and deterministic.
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const token of tokens) {
+    if (!seen.has(token)) {
+      seen.add(token);
+      unique.push(token);
+    }
+  }
+  return unique;
+}
+
+async function maybeAutoSelectCodebase(
+  platform: IPlatformAdapter,
+  conversation: Conversation,
+  conversationId: string,
+  message: string
+): Promise<Conversation> {
+  if (conversation.codebase_id) return conversation;
+  if (message.trim().startsWith('/')) return conversation;
+
+  const mentions = extractPossibleWorkflowMentions(message);
+  if (mentions.length === 0) return conversation;
+
+  const codebases = await codebaseDb.listCodebases();
+  if (codebases.length <= 1) return conversation;
+
+  // Heuristic: if the user mentions a workflow name that exists in exactly one
+  // registered project, attach that project automatically for this conversation.
+  // This avoids forcing the user to pre-select a project for common intents like
+  // "nutz finanztip-reporting".
+  const candidates: { codebase: Codebase; workflowNames: Set<string> }[] = [];
+  for (const codebase of codebases) {
+    try {
+      const result = await discoverWorkflowsWithConfig(codebase.default_cwd, loadConfig);
+      candidates.push({
+        codebase,
+        workflowNames: new Set(result.workflows.map(w => w.workflow.name.toLowerCase())),
+      });
+    } catch (error) {
+      getLog().debug(
+        { err: error as Error, codebaseId: codebase.id, cwd: codebase.default_cwd },
+        'auto_codebase_discovery_failed'
+      );
+    }
+  }
+
+  if (candidates.length === 0) return conversation;
+
+  for (const mention of mentions) {
+    const matches = candidates.filter(c => c.workflowNames.has(mention));
+    if (matches.length === 1) {
+      const selected = matches[0].codebase;
+      getLog().info(
+        { conversationId, selectedCodebaseId: selected.id, mention },
+        'auto_codebase_selected'
+      );
+      try {
+        await db.updateConversation(conversation.id, {
+          codebase_id: selected.id,
+          cwd: selected.default_cwd,
+        });
+        const refreshed = await db.getOrCreateConversation(
+          platform.getPlatformType(),
+          conversationId
+        );
+        return refreshed;
+      } catch (error) {
+        getLog().warn(
+          { err: error as Error, conversationId, selectedCodebaseId: selected.id },
+          'auto_codebase_select_failed'
+        );
+        return conversation;
+      }
+    }
+  }
+
+  return conversation;
+}
+
 /** Discover global + repo-specific workflows, merge by name (repo overrides global) */
 async function discoverAllWorkflows(conversation: Conversation): Promise<DiscoverResult> {
   let workflows: WorkflowWithSource[] = [];
@@ -923,6 +1029,15 @@ async function discoverAllWorkflows(conversation: Conversation): Promise<Discove
     } catch (error) {
       getLog().warn({ err: error as Error }, 'repo_workflow_discovery_failed');
     }
+  }
+
+  // Slack is a chat-first UX. The bundled "archon-*" workflows are primarily for
+  // developing Archon itself and can be confusing when suggested in Slack.
+  // Keep user/global/project workflows, but hide bundled defaults.
+  if (conversation.platform_type === 'slack') {
+    workflows = workflows.filter(
+      w => w.source !== 'bundled' && !w.workflow.name.toLowerCase().startsWith('archon-')
+    );
   }
 
   return { workflows, errors: allErrors, syncResult, syncError, config, codebase };
@@ -1012,6 +1127,7 @@ export async function handleMessage(
       parentConversationId,
       conversationId
     );
+    conversation = await maybeAutoSelectCodebase(platform, conversation, conversationId, message);
 
     // Natural-language approval routing — if a workflow is paused in this
     // conversation, treat any non-slash message as the approval response.
@@ -1636,12 +1752,20 @@ export async function handleMessage(
     getLog().debug({ conversationId }, 'orchestrator_message_completed');
   } catch (error) {
     const err = toError(error);
-    getLog().error({ err, conversationId }, 'orchestrator_message_failed');
-    const userMessage = classifyAndFormatError(err);
+    const errorRef = randomUUID();
+    getLog().error({ err, conversationId, errorRef }, 'orchestrator_message_failed');
+    const formatted = classifyAndFormatError(err);
+    const userMessage =
+      formatted === GENERIC_UNEXPECTED_ERROR_MESSAGE
+        ? `${GENERIC_UNEXPECTED_ERROR_MESSAGE} (ref: ${errorRef})`
+        : formatted;
     try {
       await platform.sendMessage(conversationId, userMessage);
     } catch (sendError) {
-      getLog().error({ err: toError(sendError), conversationId }, 'error_notification_failed');
+      getLog().error(
+        { err: toError(sendError), conversationId, errorRef },
+        'error_notification_failed'
+      );
     }
   }
 }
@@ -1729,6 +1853,9 @@ async function handleStreamMode(
       if (!commandDetected && platform.sendStructuredEvent) {
         await platform.sendStructuredEvent(conversationId, msg);
       }
+    } else if (msg.type === 'rate_limit') {
+      // Providers may emit a rate limit event before (or instead of) a structured error result.
+      await platform.sendMessage(conversationId, formatRateLimitUserMessage(msg.rateLimitInfo));
     } else if (msg.type === 'result') {
       if (msg.isError && msg.errorSubtype === 'error_during_execution') {
         getLog().warn(
@@ -1959,6 +2086,8 @@ async function handleBatchMode(
         allChunks.push({ type: 'tool', content: toolMessage });
         getLog().debug({ toolName: msg.toolName }, 'tool_call');
       }
+    } else if (msg.type === 'rate_limit') {
+      await platform.sendMessage(conversationId, formatRateLimitUserMessage(msg.rateLimitInfo));
     } else if (msg.type === 'result') {
       if (msg.isError && msg.errorSubtype === 'error_during_execution') {
         getLog().warn(

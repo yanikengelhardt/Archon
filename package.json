@@ -23,8 +23,8 @@
     "dev:daemon:logs": "bash scripts/local-dev-daemon.sh logs",
     "dev:daemon:install": "bash scripts/local-dev-daemon.sh install",
     "dev:daemon:uninstall": "bash scripts/local-dev-daemon.sh uninstall",
-    "dev:server": "bun --filter @archon/server dev",
-    "start": "bun --filter @archon/server start",
+    "dev:server": "bun --cwd packages/server dev",
+    "start": "bun --cwd packages/server start",
     "build": "bun --filter '*' build",
     "build:binaries": "bash scripts/build-binaries.sh",
     "build:checksums": "bash scripts/checksums.sh",
@@ -36,7 +36,7 @@
     "generate:pi-vendor-map": "bun run scripts/generate-pi-vendor-map.ts",
     "check:pi-vendor-map": "bun run scripts/generate-pi-vendor-map.ts --check",
     "test": "bun --filter '*' --parallel test",
-    "test:watch": "bun --filter @archon/server test:watch",
+    "test:watch": "bun --cwd packages/server test --watch",
     "type-check": "bun --filter '*' type-check && bun x tsc --noEmit -p scripts/tsconfig.json",
     "lint": "bun x eslint . --cache",
     "lint:fix": "bun x eslint . --cache --fix",
@@ -48,7 +48,7 @@
     "build:docs": "bun --filter @archon/docs-web build",
     "validate": "bun run check:bundled && bun run check:bundled-skill && bun run check:bundled-schema && bun run check:pi-vendor-map && bun run type-check && bun run lint --max-warnings 0 && bun run format:check && bun run test",
     "prepare": "husky",
-    "setup-auth": "bun --filter @archon/server setup-auth"
+    "setup-auth": "bun --cwd packages/server setup-auth"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

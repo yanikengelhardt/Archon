@@ -7,6 +7,22 @@ export function toError(error: unknown): Error {
     return new Error(error);
   }
 
+  if (error != null && typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    const message = record.message;
+    if (typeof message === 'string') {
+      return new Error(message);
+    }
+    const errorField = record.error;
+    if (typeof errorField === 'string') {
+      return new Error(errorField);
+    }
+    const statusText = record.statusText;
+    if (typeof statusText === 'string') {
+      return new Error(statusText);
+    }
+  }
+
   try {
     const serialized = JSON.stringify(error);
     if (serialized !== undefined) {

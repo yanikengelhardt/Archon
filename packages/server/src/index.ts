@@ -19,6 +19,7 @@ import {
 import { config } from 'dotenv';
 import { resolve } from 'path';
 import { existsSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { BUNDLED_IS_BINARY, getArchonEnvPath } from '@archon/paths';
 
 // In dev/source mode, load the repo root .env (platform tokens, API keys, etc.)
@@ -106,6 +107,7 @@ import {
 import type { IPlatformAdapter } from '@archon/core';
 import type { IdentityPlatform } from '@archon/core';
 import * as userDb from '@archon/core/db/users';
+import { toError } from '@archon/core/utils/error';
 import {
   createLogger,
   logArchonPaths,
@@ -130,6 +132,9 @@ function getLog(): ReturnType<typeof createLogger> {
   if (!cachedLog) cachedLog = createLogger('server');
   return cachedLog;
 }
+
+const GENERIC_UNEXPECTED_ERROR_MESSAGE =
+  '⚠️ An unexpected error occurred. Try /reset to start a fresh session.';
 
 /**
  * Resolve a platform-native user identifier (Slack U-id, Telegram chat id,
@@ -176,12 +181,21 @@ function createMessageErrorHandler(
   conversationId: string
 ): (error: unknown) => Promise<void> {
   return async (error: unknown): Promise<void> => {
-    getLog().error({ err: error, platform, conversationId }, 'message_processing_failed');
+    const err = toError(error);
+    const errorRef = randomUUID();
+    getLog().error({ err, platform, conversationId, errorRef }, 'message_processing_failed');
     try {
-      const userMessage = classifyAndFormatError(error as Error);
+      const formatted = classifyAndFormatError(err);
+      const userMessage =
+        formatted === GENERIC_UNEXPECTED_ERROR_MESSAGE
+          ? `${GENERIC_UNEXPECTED_ERROR_MESSAGE} (ref: ${errorRef})`
+          : formatted;
       await adapter.sendMessage(conversationId, userMessage);
     } catch (sendError) {
-      getLog().error({ err: sendError, platform, conversationId }, 'error_message_send_failed');
+      getLog().error(
+        { err: toError(sendError), platform, conversationId, errorRef },
+        'error_message_send_failed'
+      );
     }
   };
 }
@@ -571,6 +585,7 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
             await handleMessage(discordAdapter, conversationId, content, {
               threadContext,
               parentConversationId,
+              assistantType: config.assistant,
               isolationHints: { workflowType: 'thread', workflowId: conversationId },
               userId,
             });
@@ -655,6 +670,7 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
             await handleMessage(slackAdapter, conversationId, content, {
               threadContext,
               parentConversationId,
+              assistantType: config.assistant,
               isolationHints: { workflowType: 'thread', workflowId: conversationId },
               userId,
             });
@@ -964,22 +980,19 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
     const telegramAdapter = telegram; // Capture for use in callback
 
     // Register message handler (auth is handled internally by adapter)
-    telegramAdapter.onMessage(
-      async ({ conversationId, message, userId: telegramUserId, displayName }) => {
-        // Resolve Telegram user id (numeric) → Archon user UUID.
-        const userId = await resolveUserId('telegram', telegramUserId, displayName);
-
-        // Fire-and-forget: handler returns immediately, processing happens async
-        lockManager
-          .acquireLock(conversationId, async () => {
-            await handleMessage(telegramAdapter, conversationId, message, {
-              isolationHints: { workflowType: 'thread', workflowId: conversationId },
-              userId,
-            });
-          })
-          .catch(createMessageErrorHandler('Telegram', telegramAdapter, conversationId));
-      }
-    );
+    telegramAdapter.onMessage(async ({ conversationId, message, userId: telegramUserId, displayName }) => {
+      const userId = await resolveUserId('telegram', telegramUserId, displayName);
+      // Fire-and-forget: handler returns immediately, processing happens async
+      lockManager
+        .acquireLock(conversationId, async () => {
+          await handleMessage(telegramAdapter, conversationId, message, {
+            assistantType: config.assistant,
+            isolationHints: { workflowType: 'thread', workflowId: conversationId },
+            userId,
+          });
+        })
+        .catch(createMessageErrorHandler('Telegram', telegramAdapter, conversationId));
+    });
 
     try {
       await telegramAdapter.start();

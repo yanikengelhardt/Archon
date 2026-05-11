@@ -833,17 +833,7 @@ export async function executeWorkflow(
     }
 
     // Add workflow start message (step details omitted from text notification)
-    // Strip routing metadata from description (Use when:, Handles:, NOT for:, Capability:, Triggers:)
-    const cleanDescription = (workflow.description ?? '')
-      .split('\n')
-      .filter(
-        line =>
-          !/^\s*(Use when|Handles|NOT for|Capability|Triggers)[:\s]/i.test(line) && line.trim()
-      )
-      .join('\n')
-      .trim();
-    const descriptionText = cleanDescription || workflow.name;
-    startupMessage += `🚀 **Starting workflow**: \`${workflow.name}\`\n\n> ${descriptionText}`;
+    startupMessage += `🚀 **Starting workflow**: \`${workflow.name}\``;
 
     // Send consolidated message - use critical send with limited retries (1 retry max)
     // to avoid blocking workflow execution while still catching transient failures

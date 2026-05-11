@@ -36,6 +36,24 @@ describe('toError', () => {
     expect(result.message).toContain('not found');
   });
 
+  test('prefers { message } on non-Error objects', () => {
+    const result = toError({ message: 'success' });
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe('success');
+  });
+
+  test('prefers { error } on non-Error objects', () => {
+    const result = toError({ error: 'permission denied' });
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe('permission denied');
+  });
+
+  test('prefers { statusText } on non-Error objects', () => {
+    const result = toError({ statusText: 'success' });
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe('success');
+  });
+
   test('handles null', () => {
     const result = toError(null);
     expect(result).toBeInstanceOf(Error);

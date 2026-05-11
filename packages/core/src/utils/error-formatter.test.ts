@@ -235,6 +235,11 @@ describe('classifyAndFormatError', () => {
       expect(result).toBe('⚠️ Error: unexpected EOF. Try /reset if issue persists.');
     });
 
+    test('treats meaningless "success" as generic unexpected error', () => {
+      const result = classifyAndFormatError(new Error('success'));
+      expect(result).toBe('⚠️ An unexpected error occurred. Try /reset to start a fresh session.');
+    });
+
     test('returns formatted message for exactly 99-char message', () => {
       const msg = 'a'.repeat(99);
       const result = classifyAndFormatError(new Error(msg));
