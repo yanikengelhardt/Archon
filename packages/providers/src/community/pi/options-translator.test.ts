@@ -134,9 +134,9 @@ describe('resolvePiTools', () => {
     expect(result.unknownTools).toEqual(['UnknownA', 'UnknownB']);
   });
 
-  test('no allow/deny with non-empty env → returns Pi default 4-tool set with env-aware bash', () => {
+  test('no allow/deny with non-empty env → still returns undefined (Pi defaults)', () => {
     const result = resolvePiTools(cwd, undefined, { DATABASE_URL: 'postgres://x' });
-    expect(result.tools).toHaveLength(4); // read/bash/edit/write
+    expect(result.tools).toBeUndefined();
     expect(result.unknownTools).toEqual([]);
   });
 

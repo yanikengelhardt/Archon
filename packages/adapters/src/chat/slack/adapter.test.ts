@@ -353,6 +353,7 @@ describe('SlackAdapter', () => {
           channel: 'D456',
           ts: '1234567890.123456',
           thread_ts: undefined,
+          displayName: 'Alice Liddell',
         },
       ]);
     });
@@ -382,6 +383,7 @@ describe('SlackAdapter', () => {
           channel: 'D456',
           ts: '1234567890.123456',
           thread_ts: undefined,
+          displayName: 'Alice Liddell',
         },
       ]);
     });

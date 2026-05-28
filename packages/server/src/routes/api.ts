@@ -3632,7 +3632,7 @@ export function registerApiRoutes(
         const content = await readFile(globalFilePath, 'utf-8');
         const result = parseWorkflow(content, filename);
         if (result.error) {
-          return apiError(c, 500, `Workflow file is invalid: ${result.error.error}`);
+          return apiError(c, 500, `Home workflow file is invalid: ${result.error.error}`);
         }
         return c.json({ workflow: result.workflow, filename, source: 'global' as WorkflowSource });
       } catch (err) {
