@@ -2,7 +2,7 @@
  * Standalone repository clone/register logic.
  * Extracted from command-handler.ts for reuse by REST endpoints.
  */
-import { access, rm, stat } from 'fs/promises';
+import * as fs from 'fs/promises';
 import { join, basename, resolve } from 'path';
 import * as codebaseDb from '../db/codebases';
 import { sanitizeError } from '../utils/credential-sanitizer';
@@ -194,7 +194,7 @@ async function registerRepoAtPath(
     for (const folder of getCommandFolderSearchPaths()) {
       const commandPath = join(effectiveCwd, folder);
       try {
-        await access(commandPath);
+        await fs.access(commandPath);
       } catch {
         continue;
       }
@@ -238,7 +238,7 @@ async function registerRepoAtPath(
   for (const folder of getCommandFolderSearchPaths()) {
     const commandPath = join(targetPath, folder);
     try {
-      await access(commandPath);
+      await fs.access(commandPath);
     } catch {
       continue; // Folder doesn't exist, try next
     }
@@ -314,7 +314,7 @@ export async function cloneRepository(repoUrl: string): Promise<RegisterResult> 
   // Check if source directory already has a git repo
   let directoryExists = false;
   try {
-    await access(join(targetPath, '.git'));
+    await fs.access(join(targetPath, '.git'));
     directoryExists = true;
   } catch {
     // Directory doesn't exist or isn't a git repo, proceed with clone
@@ -369,7 +369,7 @@ export async function cloneRepository(repoUrl: string): Promise<RegisterResult> 
 
   // Remove the empty source/ directory before cloning (git clone requires non-existent target)
   try {
-    await rm(targetPath, { recursive: true });
+    await fs.rm(targetPath, { recursive: true });
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code !== 'ENOENT') {
@@ -398,19 +398,6 @@ export async function cloneRepository(repoUrl: string): Promise<RegisterResult> 
  * Git metadata is used when present, but plain folders are valid for direct chat.
  */
 export async function registerRepository(localPath: string): Promise<RegisterResult> {
-  try {
-    const localStat = await stat(localPath);
-    if (!localStat.isDirectory()) {
-      throw new Error(`Path is not a directory: ${localPath}`);
-    }
-  } catch (error) {
-    const err = error as NodeJS.ErrnoException;
-    if (err.code === 'ENOENT') {
-      throw new Error(`Path does not exist: ${localPath}`);
-    }
-    throw error;
-  }
-
   // Check if already registered by path before doing any git-specific probing.
   const existing = await codebaseDb.findCodebaseByDefaultCwd(localPath);
   if (existing) {
@@ -425,34 +412,21 @@ export async function registerRepository(localPath: string): Promise<RegisterRes
     };
   }
 
-  let isGitRepository = true;
   try {
     await execFileAsync('git', ['-C', localPath, 'rev-parse', '--git-dir']);
-  } catch (error) {
-    isGitRepository = false;
-    getLog().info(
-      { path: localPath, err: error as Error },
-      'local_path_registered_without_git_metadata'
-    );
+  } catch (_error) {
+    throw new Error('Path is not a git repository');
   }
 
   // Get remote URL (optional — local-only repos and plain folders may not have one)
   let remoteUrl: string | null = null;
-  if (isGitRepository) {
-    try {
-      const { stdout } = await execFileAsync('git', [
-        '-C',
-        localPath,
-        'remote',
-        'get-url',
-        'origin',
-      ]);
-      remoteUrl = stdout.trim() || null;
-    } catch (error) {
-      const msg = (error as Error).message ?? '';
-      if (!msg.includes('No such remote')) {
-        getLog().warn({ path: localPath, err: error }, 'remote_url_fetch_unexpected_error');
-      }
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', localPath, 'remote', 'get-url', 'origin']);
+    remoteUrl = stdout.trim() || null;
+  } catch (error) {
+    const msg = (error as Error).message ?? '';
+    if (!msg.includes('No such remote')) {
+      getLog().warn({ path: localPath, err: error }, 'remote_url_fetch_unexpected_error');
     }
   }
 

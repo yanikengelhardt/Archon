@@ -2304,6 +2304,7 @@ describe('handleMessage — workflow context injection', () => {
       'cli-chat-123-abc',
       undefined,
       undefined,
+      undefined,
       undefined
     );
   });
@@ -2589,9 +2590,14 @@ describe('handleMessage — multi-chunk command accumulation (regression)', () =
   });
 
   test('stream mode — invoke-workflow split across 2 chunks', async () => {
+    // maybeAutoSelectCodebase consumes the first listCodebases call; main flow needs a second.
+    mockListCodebases.mockReturnValueOnce(Promise.resolve([makeCodebase('my-project')]));
     mockListCodebases.mockReturnValueOnce(Promise.resolve([makeCodebase('my-project')]));
     mockDiscoverWorkflowsWithConfig.mockReturnValueOnce(
-      Promise.resolve({ workflows: [makeTestWorkflowWithSource({ name: 'assist' })], errors: [] })
+      Promise.resolve({
+        workflows: [makeTestWorkflowWithSource({ name: 'assist', interactive: false })],
+        errors: [],
+      })
     );
     mockSendQuery.mockImplementationOnce(async function* () {
       yield { type: 'assistant', content: 'Running the workflow now.\n\n/invoke-workflow ' };
@@ -2608,9 +2614,14 @@ describe('handleMessage — multi-chunk command accumulation (regression)', () =
   });
 
   test('batch mode — invoke-workflow split across 2 chunks', async () => {
+    // maybeAutoSelectCodebase consumes the first listCodebases call; main flow needs a second.
+    mockListCodebases.mockReturnValueOnce(Promise.resolve([makeCodebase('my-project')]));
     mockListCodebases.mockReturnValueOnce(Promise.resolve([makeCodebase('my-project')]));
     mockDiscoverWorkflowsWithConfig.mockReturnValueOnce(
-      Promise.resolve({ workflows: [makeTestWorkflowWithSource({ name: 'assist' })], errors: [] })
+      Promise.resolve({
+        workflows: [makeTestWorkflowWithSource({ name: 'assist', interactive: false })],
+        errors: [],
+      })
     );
     mockSendQuery.mockImplementationOnce(async function* () {
       yield { type: 'assistant', content: 'Running the workflow now.\n\n/invoke-workflow ' };
@@ -2631,9 +2642,14 @@ describe('handleMessage — multi-chunk command accumulation (regression)', () =
     // --project <token> arrives without a line terminator, because --prompt may follow
     // in the next chunk. Without this fix, commandFullyParsed fires early and the
     // --prompt chunk is never accumulated, causing synthesizedPrompt to be lost.
+    // maybeAutoSelectCodebase consumes the first listCodebases call; main flow needs a second.
+    mockListCodebases.mockReturnValueOnce(Promise.resolve([makeCodebase('my-project')]));
     mockListCodebases.mockReturnValueOnce(Promise.resolve([makeCodebase('my-project')]));
     mockDiscoverWorkflowsWithConfig.mockReturnValueOnce(
-      Promise.resolve({ workflows: [makeTestWorkflowWithSource({ name: 'assist' })], errors: [] })
+      Promise.resolve({
+        workflows: [makeTestWorkflowWithSource({ name: 'assist', interactive: false })],
+        errors: [],
+      })
     );
     mockSendQuery.mockImplementationOnce(async function* () {
       yield {
@@ -2656,9 +2672,14 @@ describe('handleMessage — multi-chunk command accumulation (regression)', () =
   });
 
   test('batch mode — invoke-workflow with --prompt split into a later chunk', async () => {
+    // maybeAutoSelectCodebase consumes the first listCodebases call; main flow needs a second.
+    mockListCodebases.mockReturnValueOnce(Promise.resolve([makeCodebase('my-project')]));
     mockListCodebases.mockReturnValueOnce(Promise.resolve([makeCodebase('my-project')]));
     mockDiscoverWorkflowsWithConfig.mockReturnValueOnce(
-      Promise.resolve({ workflows: [makeTestWorkflowWithSource({ name: 'assist' })], errors: [] })
+      Promise.resolve({
+        workflows: [makeTestWorkflowWithSource({ name: 'assist', interactive: false })],
+        errors: [],
+      })
     );
     mockSendQuery.mockImplementationOnce(async function* () {
       yield {
