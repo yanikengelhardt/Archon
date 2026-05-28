@@ -134,7 +134,8 @@ describe('resolvePiTools', () => {
     expect(result.unknownTools).toEqual(['UnknownA', 'UnknownB']);
   });
 
-  test('no allow/deny with non-empty env → still returns undefined (Pi defaults)', () => {
+  test('no allow/deny with non-empty env → still returns undefined (Pi defaults, env is no-op in 0.73+)', () => {
+    // pi-coding-agent 0.73+ uses string-based tools; no spawnHook injection.
     const result = resolvePiTools(cwd, undefined, { DATABASE_URL: 'postgres://x' });
     expect(result.tools).toBeUndefined();
     expect(result.unknownTools).toEqual([]);
