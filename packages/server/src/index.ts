@@ -980,19 +980,21 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
     const telegramAdapter = telegram; // Capture for use in callback
 
     // Register message handler (auth is handled internally by adapter)
-    telegramAdapter.onMessage(async ({ conversationId, message, userId: telegramUserId, displayName }) => {
-      const userId = await resolveUserId('telegram', telegramUserId, displayName);
-      // Fire-and-forget: handler returns immediately, processing happens async
-      lockManager
-        .acquireLock(conversationId, async () => {
-          await handleMessage(telegramAdapter, conversationId, message, {
-            assistantType: config.assistant,
-            isolationHints: { workflowType: 'thread', workflowId: conversationId },
-            userId,
-          });
-        })
-        .catch(createMessageErrorHandler('Telegram', telegramAdapter, conversationId));
-    });
+    telegramAdapter.onMessage(
+      async ({ conversationId, message, userId: telegramUserId, displayName }) => {
+        const userId = await resolveUserId('telegram', telegramUserId, displayName);
+        // Fire-and-forget: handler returns immediately, processing happens async
+        lockManager
+          .acquireLock(conversationId, async () => {
+            await handleMessage(telegramAdapter, conversationId, message, {
+              assistantType: config.assistant,
+              isolationHints: { workflowType: 'thread', workflowId: conversationId },
+              userId,
+            });
+          })
+          .catch(createMessageErrorHandler('Telegram', telegramAdapter, conversationId));
+      }
+    );
 
     try {
       await telegramAdapter.start();
