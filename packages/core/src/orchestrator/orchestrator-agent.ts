@@ -2609,10 +2609,10 @@ async function handleWorkflowRunCommand(
       workflow,
       userMessage,
       conversation.id,
-      undefined, // codebaseId — not required when worktree is disabled
-      undefined,
-      undefined,
-      conversation.id
+      {
+        parentConversationId: conversation.id,
+        userId,
+      }
     );
     return;
   }
