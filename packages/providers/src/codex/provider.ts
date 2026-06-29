@@ -212,9 +212,7 @@ function buildCodexMcpConfigOverrides(
   return { mcp_servers: mcpServers };
 }
 
-const CODEX_MODEL_FALLBACKS: Record<string, string> = {
-  'gpt-5.3-codex': 'gpt-5.2-codex',
-};
+const CODEX_MODEL_FALLBACKS: Record<string, string> = {};
 
 function findSkillMarkdown(root: string, skillName: string, depth = 0): string | undefined {
   if (depth > 3) return undefined;

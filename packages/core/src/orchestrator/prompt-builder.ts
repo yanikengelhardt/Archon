@@ -32,6 +32,8 @@ export function formatWorkflowSection(workflows: readonly WorkflowDefinition[]):
     section += `**${w.name}**\n`;
     section += `  ${w.description}\n`;
     section += `  Type: DAG (${String(w.nodes.length)} nodes)\n`;
+    section +=
+      "  Choose this workflow when the user's request matches the workflow description above.\n";
     section += '\n';
   }
   return section;
@@ -83,7 +85,7 @@ export function buildRoutingRulesWithProject(projectName?: string): string {
 
   return `## Routing Rules
 
-1. If the user asks a question, wants to explore code, or needs help → answer directly
+1. If the user explicitly asks to run/use/start a workflow, or their request clearly matches an available workflow description → invoke that workflow
 2. If the user wants structured development work → invoke the appropriate workflow
 3. If the user mentions a specific project → use that project's name
 ${rule4}
@@ -105,7 +107,8 @@ Rules:
 
 Routing behavior:
 - If the user clearly wants work done (e.g., "create a plan for X", "implement Y", "fix Z") → include a brief explanation of what you're doing, then invoke the workflow.
-- If the user is asking a question or it's unclear whether they want a workflow → answer their question directly. You may suggest a workflow by name (e.g., "I can run the **archon-assist** workflow for this if you'd like"), but do NOT include /invoke-workflow in your response.
+- If the user is asking a question and a listed workflow is designed for that question domain (for example a vault/research/search workflow for knowledge-base questions) → invoke the workflow instead of answering directly.
+- If the user is asking a question and no listed workflow clearly matches → answer directly. You may suggest a workflow by name (e.g., "I can run the **archon-assist** workflow for this if you'd like"), but do NOT include /invoke-workflow in your response.
 
 Example (clear intent):
 I'll analyze the orchestrator module architecture for you.

@@ -66,14 +66,14 @@ export const CLAUDE_MODEL_OPTIONS: readonly ModelOption[] = [
 ];
 
 /**
- * Codex model strings used across the repo's config examples
- * (docs/getting-started/ai-assistants.md and CLAUDE.md: `gpt-5.3-codex`,
- * tiers example `gpt-5.5`, docs `gpt-5.2`).
+ * Codex model strings used as convenience suggestions. This list is not
+ * authoritative — the picker keeps a Custom free-text path for account-specific
+ * and newly shipped model ids.
  */
 export const CODEX_MODEL_OPTIONS: readonly ModelOption[] = [
-  { value: 'gpt-5.3-codex' },
   { value: 'gpt-5.5' },
-  { value: 'gpt-5.2' },
+  { value: 'gpt-5.4' },
+  { value: 'gpt-5.4-mini' },
 ];
 
 /**

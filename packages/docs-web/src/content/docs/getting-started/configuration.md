@@ -38,7 +38,7 @@ assistants:
     settingSources:
       - project
   codex:
-    model: gpt-5.3-codex
+    model: gpt-5.4
     modelReasoningEffort: medium
 
 # docs:

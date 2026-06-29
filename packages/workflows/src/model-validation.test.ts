@@ -33,7 +33,7 @@ describe('buildAiProfile — tier defaults', () => {
 
   test('preserves effort from tier defaults (codex)', () => {
     const profile = buildAiProfile('codex');
-    expect(profile.aliases.small?.effort).toBe('minimal');
+    expect(profile.aliases.small?.effort).toBe('low');
     expect(profile.aliases.medium?.effort).toBe('medium');
     expect(profile.aliases.large?.effort).toBe('high');
   });
@@ -162,7 +162,7 @@ describe('buildAiProfile — alias layering', () => {
   test('alias entry effort is preserved', () => {
     const profile = buildAiProfile('codex', {
       repoAliases: {
-        '@deep': { provider: 'codex', model: 'gpt-5.3-codex', effort: 'xhigh' },
+        '@deep': { provider: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
       },
     });
     expect(profile.aliases['@deep']?.effort).toBe('xhigh');

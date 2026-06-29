@@ -59,7 +59,12 @@ export async function generateAndSetTitle(
     const options: SendQueryOptions = {
       ...(requestOptions ?? {}),
       ...(titleModel ? { model: titleModel } : {}),
-      assistantConfig: requestOptions?.assistantConfig ?? assistantConfig,
+      assistantConfig: {
+        ...(requestOptions?.assistantConfig ?? assistantConfig),
+        // Title generation is pure text. Do not inherit live web/image tools from
+        // the main assistant config; Codex rejects those with minimal reasoning.
+        webSearchMode: 'disabled',
+      },
       nodeConfig: {
         ...(requestOptions?.nodeConfig ?? {}),
         allowed_tools: [], // No tool access — pure text generation

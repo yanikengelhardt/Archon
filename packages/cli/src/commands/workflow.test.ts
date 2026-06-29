@@ -299,7 +299,7 @@ describe('workflowListCommand', () => {
           name: 'plan',
           description: 'Planning workflow',
           provider: 'codex',
-          model: 'gpt-5.3-codex',
+          model: 'gpt-5.4',
           modelReasoningEffort: 'high',
           webSearchMode: 'live',
         }),
@@ -318,7 +318,7 @@ describe('workflowListCommand', () => {
       name: 'plan',
       description: 'Planning workflow',
       provider: 'codex',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
       modelReasoningEffort: 'high',
       webSearchMode: 'live',
     });

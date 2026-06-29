@@ -785,7 +785,7 @@ describe('CodexProvider', () => {
       });
 
       for await (const _ of client.sendQuery('test prompt', '/workspace', undefined, {
-        model: 'gpt-5.2-codex',
+        model: 'gpt-5.4',
         assistantConfig: {
           modelReasoningEffort: 'medium',
           webSearchMode: 'live',
@@ -797,7 +797,7 @@ describe('CodexProvider', () => {
 
       expect(mockStartThread).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-5.2-codex',
+          model: 'gpt-5.4',
           modelReasoningEffort: 'medium',
           webSearchMode: 'live',
           additionalDirectories: ['/other/repo'],
@@ -1478,16 +1478,16 @@ describe('CodexProvider', () => {
 
       const consumeGenerator = async () => {
         for await (const _ of client.sendQuery('test', '/workspace', undefined, {
-          model: 'gpt-5.3-codex',
+          model: 'gpt-5.5',
         })) {
           // consume
         }
       };
 
       await expect(consumeGenerator()).rejects.toThrow(
-        'Model "gpt-5.3-codex" is not available for your account'
+        'Model "gpt-5.5" is not available for your account'
       );
-      await expect(consumeGenerator()).rejects.toThrow('model: gpt-5.2-codex');
+      await expect(consumeGenerator()).rejects.toThrow('model in ~/.archon/config.yaml');
     });
 
     test('uses generic dashboard guidance when fallback mapping is unknown', async () => {

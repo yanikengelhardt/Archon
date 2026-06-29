@@ -501,6 +501,38 @@ function filterToolIndicators(assistantMessages: string[]): string {
   return finalMessage || allMessages;
 }
 
+/**
+ * Batch chat surfaces like Slack should show the final answer, not the agent's
+ * visible preamble before it starts searching/reading. Codex emits those
+ * preambles as ordinary assistant text, so when tools were used we prefer
+ * assistant chunks that arrived after the last tool call. If the provider never
+ * produced a post-tool answer, fall back to the full assistant text.
+ */
+function buildBatchFinalMessage(
+  allChunks: readonly { type: string; content: string }[],
+  assistantMessages: readonly string[]
+): string {
+  let lastToolIndex = -1;
+  for (let i = allChunks.length - 1; i >= 0; i--) {
+    if (allChunks[i]?.type === 'tool') {
+      lastToolIndex = i;
+      break;
+    }
+  }
+  if (lastToolIndex === -1) {
+    return filterToolIndicators([...assistantMessages]);
+  }
+
+  const postToolAssistantMessages = allChunks
+    .slice(lastToolIndex + 1)
+    .filter(chunk => chunk.type === 'assistant')
+    .map(chunk => chunk.content);
+
+  return filterToolIndicators(
+    postToolAssistantMessages.length > 0 ? postToolAssistantMessages : [...assistantMessages]
+  );
+}
+
 // ─── Workflow Dispatch ──────────────────────────────────────────────────────
 
 interface WorkflowDispatchOptions {
@@ -2205,8 +2237,9 @@ async function handleBatchMode(
     'batch_mode_chunks_received'
   );
 
-  // Filter tool indicators and build final message
-  const finalMessage = filterToolIndicators(assistantMessages);
+  // Filter tool indicators and build final message. For tool-using turns, hide
+  // visible pre-tool preambles and keep the actual post-tool answer.
+  const finalMessage = buildBatchFinalMessage(allChunks, assistantMessages);
 
   if (!finalMessage) {
     // Intentionally NOT counted in chat_turn_handled — an empty response is

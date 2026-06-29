@@ -197,7 +197,10 @@ describe('title-generator', () => {
     const optionsArg = mockSendQuery.mock.calls[0][3] as {
       assistantConfig?: Record<string, unknown>;
     };
-    expect(optionsArg.assistantConfig).toEqual(assistantConfig);
+    expect(optionsArg.assistantConfig).toEqual({
+      ...assistantConfig,
+      webSearchMode: 'disabled',
+    });
   });
 
   test('merges resolved requestOptions while disabling tools', async () => {
@@ -209,7 +212,10 @@ describe('title-generator', () => {
 
     const optionsArg = mockSendQuery.mock.calls[0][3] as SendQueryOptions;
     expect(optionsArg.model).toBe('haiku');
-    expect(optionsArg.assistantConfig).toEqual({ settingSources: ['project'] });
+    expect(optionsArg.assistantConfig).toEqual({
+      settingSources: ['project'],
+      webSearchMode: 'disabled',
+    });
     expect(optionsArg.nodeConfig).toEqual({
       thinking: { type: 'enabled', budgetTokens: 1000 },
       allowed_tools: [],

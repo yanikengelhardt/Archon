@@ -42,12 +42,12 @@ describe('formatCostFooter', () => {
   test('combines model, cost, tokens, and stopReason', () => {
     expect(
       formatCostFooter({
-        model: 'gpt-5.2',
+        model: 'gpt-5.4',
         cost: 0.1234,
         tokens: { input: 5000, output: 7500 },
         stopReason: 'end_turn',
       })
-    ).toBe('_gpt-5.2 · $0.1234 · in: 5.0k · out: 7.5k · stop: end_turn_');
+    ).toBe('_gpt-5.4 · $0.1234 · in: 5.0k · out: 7.5k · stop: end_turn_');
   });
 
   test('combines cost, tokens, and stopReason without model', () => {
