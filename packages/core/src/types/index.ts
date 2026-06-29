@@ -148,7 +148,7 @@ export interface IPlatformAdapter {
    */
   sendResultFooter?(
     conversationId: string,
-    info: { cost?: number; tokens?: TokenUsage; stopReason?: string }
+    info: { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string }
   ): Promise<void>;
 }
 

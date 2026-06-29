@@ -121,6 +121,19 @@ export interface GlobalConfig {
   };
 
   /**
+   * Codebase routing rules for automatic project selection in chat conversations.
+   * Evaluated when a new conversation has no codebase attached.
+   *
+   * Example (~/.archon/config.yaml):
+   *   routing:
+   *     defaultCodebase: seo-research
+   *     codebases:
+   *       - name: seo-yanik
+   *         keywords: [news, artikel, obsidian, wissen]
+   */
+  routing?: RoutingConfig;
+
+  /**
    * Concurrency limits
    */
   concurrency?: {
@@ -278,6 +291,20 @@ export interface RepoConfig {
   };
 }
 
+export interface CodebaseRoutingEntry {
+  /** Codebase name as registered in Archon */
+  name: string;
+  /** Keywords that trigger routing to this codebase (case-insensitive substring match) */
+  keywords: string[];
+}
+
+export interface RoutingConfig {
+  /** Codebase name to use when no other routing rule matches */
+  defaultCodebase?: string;
+  /** Per-codebase keyword routing rules, evaluated in order */
+  codebases?: CodebaseRoutingEntry[];
+}
+
 /**
  * Merged configuration (global + repo + env vars)
  * Environment variables take precedence
@@ -339,6 +366,12 @@ export interface MergedConfig {
    * Undefined when no env vars are configured.
    */
   envVars?: Record<string, string>;
+
+  /**
+   * Codebase routing rules for automatic project selection.
+   * Evaluated when a new conversation has no codebase attached.
+   */
+  routing?: RoutingConfig;
 }
 
 /**

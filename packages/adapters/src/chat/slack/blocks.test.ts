@@ -19,33 +19,45 @@ describe('formatCostFooter', () => {
   });
 
   test('formats cost only', () => {
-    expect(formatCostFooter({ cost: 0.0234 })).toBe('_cost: $0.0234_');
+    expect(formatCostFooter({ cost: 0.0234 })).toBe('_$0.0234_');
   });
 
-  test('formats tokens from input+output sum', () => {
-    expect(formatCostFooter({ tokens: { input: 1500, output: 500 } })).toBe('_2.0k tokens_');
-  });
-
-  test('formats tokens using explicit total when provided', () => {
-    expect(formatCostFooter({ tokens: { input: 0, output: 0, total: 12345 } })).toBe(
-      '_12.3k tokens_'
+  test('formats tokens as separate in/out', () => {
+    expect(formatCostFooter({ tokens: { input: 1500, output: 500 } })).toBe(
+      '_in: 1.5k · out: 500_'
     );
+  });
+
+  test('omits zero input or output', () => {
+    expect(formatCostFooter({ tokens: { input: 0, output: 500 } })).toBe('_out: 500_');
+    expect(formatCostFooter({ tokens: { input: 1500, output: 0 } })).toBe('_in: 1.5k_');
   });
 
   test('formats millions with M suffix', () => {
     expect(formatCostFooter({ tokens: { input: 1_200_000, output: 800_000 } })).toBe(
-      '_2.0M tokens_'
+      '_in: 1.2M · out: 800.0k_'
     );
   });
 
-  test('combines cost, tokens, and stopReason', () => {
+  test('combines model, cost, tokens, and stopReason', () => {
+    expect(
+      formatCostFooter({
+        model: 'gpt-5.2',
+        cost: 0.1234,
+        tokens: { input: 5000, output: 7500 },
+        stopReason: 'end_turn',
+      })
+    ).toBe('_gpt-5.2 · $0.1234 · in: 5.0k · out: 7.5k · stop: end_turn_');
+  });
+
+  test('combines cost, tokens, and stopReason without model', () => {
     expect(
       formatCostFooter({
         cost: 0.1234,
         tokens: { input: 5000, output: 7500 },
         stopReason: 'end_turn',
       })
-    ).toBe('_cost: $0.1234 · 12.5k tokens · stop: end_turn_');
+    ).toBe('_$0.1234 · in: 5.0k · out: 7.5k · stop: end_turn_');
   });
 
   test('drops non-finite cost', () => {

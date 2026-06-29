@@ -397,7 +397,8 @@ async function* streamCodexEvents(
   hasOutputFormat: boolean,
   threadId: string | null | undefined,
   abortSignal?: AbortSignal,
-  surfaceMcpClientErrors = false
+  surfaceMcpClientErrors = false,
+  model?: string
 ): AsyncGenerator<MessageChunk> {
   const state: CodexStreamState = {};
   let accumulatedText = '';
@@ -682,6 +683,7 @@ async function* streamCodexEvents(
         sessionId: resolvedThreadId ?? undefined,
         tokens: usage,
         ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+        ...(model ? { model } : {}),
       };
       return;
     }
@@ -928,7 +930,8 @@ export class CodexProvider implements IAgentProvider {
               hasOutputFormat,
               thread.id,
               attemptController.signal,
-              Boolean(requestOptions?.nodeConfig?.mcp)
+              Boolean(requestOptions?.nodeConfig?.mcp),
+              threadOptions.model
             ),
             // Stamp from the attempt that produced the result: any retry
             // (attempt > 0) re-runs on a fresh startThread (cold), so the prior

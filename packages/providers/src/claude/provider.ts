@@ -858,7 +858,10 @@ async function* streamClaudeMessages(
         ...(resultMsg.stop_reason != null ? { stopReason: resultMsg.stop_reason } : {}),
         ...(resultMsg.num_turns !== undefined ? { numTurns: resultMsg.num_turns } : {}),
         ...(resultMsg.model_usage
-          ? { modelUsage: resultMsg.model_usage as Record<string, unknown> }
+          ? {
+              modelUsage: resultMsg.model_usage as Record<string, unknown>,
+              model: Object.keys(resultMsg.model_usage)[0],
+            }
           : {}),
       };
     }

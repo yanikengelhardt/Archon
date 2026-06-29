@@ -71,17 +71,18 @@ export function formatCostFooter(input: {
   cost?: number;
   tokens?: TokenUsage;
   stopReason?: string;
+  model?: string;
 }): string | null {
   const parts: string[] = [];
+  if (input.model) parts.push(input.model);
   if (typeof input.cost === 'number' && Number.isFinite(input.cost)) {
-    parts.push(`cost: $${input.cost.toFixed(4)}`);
+    parts.push(`$${input.cost.toFixed(4)}`);
   }
   if (input.tokens) {
-    const summed = (input.tokens.input ?? 0) + (input.tokens.output ?? 0);
-    const total = input.tokens.total ?? summed;
-    if (total > 0) {
-      parts.push(`${formatTokenCount(total)} tokens`);
-    }
+    const inp = input.tokens.input ?? 0;
+    const out = input.tokens.output ?? 0;
+    if (inp > 0) parts.push(`in: ${formatTokenCount(inp)}`);
+    if (out > 0) parts.push(`out: ${formatTokenCount(out)}`);
   }
   if (input.stopReason) {
     parts.push(`stop: ${input.stopReason}`);

@@ -907,60 +907,89 @@ async function maybeAutoSelectCodebase(
   if (conversation.codebase_id) return conversation;
   if (message.trim().startsWith('/')) return conversation;
 
-  const mentions = extractPossibleWorkflowMentions(message);
-  if (mentions.length === 0) return conversation;
-
   const codebases = await codebaseDb.listCodebases();
-  if (codebases.length <= 1) return conversation;
+  if (codebases.length === 0) return conversation;
 
-  // Heuristic: if the user mentions a workflow name that exists in exactly one
-  // registered project, attach that project automatically for this conversation.
-  // This avoids forcing the user to pre-select a project for common intents like
-  // "nutz finanztip-reporting".
-  const candidates: { codebase: Codebase; workflowNames: Set<string> }[] = [];
-  for (const codebase of codebases) {
+  const config = await loadConfig();
+
+  async function attachCodebase(codebase: Codebase, reason: string): Promise<Conversation> {
+    getLog().info(
+      { conversationId, selectedCodebaseId: codebase.id, reason },
+      'auto_codebase_selected'
+    );
     try {
-      const result = await discoverWorkflowsWithConfig(codebase.default_cwd, loadConfig);
-      candidates.push({
-        codebase,
-        workflowNames: new Set(result.workflows.map(w => w.workflow.name.toLowerCase())),
+      await db.updateConversation(conversation.id, {
+        codebase_id: codebase.id,
+        cwd: codebase.default_cwd,
       });
+      return db.getOrCreateConversation(platform.getPlatformType(), conversationId);
     } catch (error) {
-      getLog().debug(
-        { err: error as Error, codebaseId: codebase.id, cwd: codebase.default_cwd },
-        'auto_codebase_discovery_failed'
+      getLog().warn(
+        { err: error as Error, conversationId, selectedCodebaseId: codebase.id },
+        'auto_codebase_select_failed'
       );
+      return conversation;
     }
   }
 
-  if (candidates.length === 0) return conversation;
-
-  for (const mention of mentions) {
-    const matches = candidates.filter(c => c.workflowNames.has(mention));
-    if (matches.length === 1) {
-      const selected = matches[0].codebase;
-      getLog().info(
-        { conversationId, selectedCodebaseId: selected.id, mention },
-        'auto_codebase_selected'
-      );
-      try {
-        await db.updateConversation(conversation.id, {
-          codebase_id: selected.id,
-          cwd: selected.default_cwd,
-        });
-        const refreshed = await db.getOrCreateConversation(
-          platform.getPlatformType(),
-          conversationId
-        );
-        return refreshed;
-      } catch (error) {
-        getLog().warn(
-          { err: error as Error, conversationId, selectedCodebaseId: selected.id },
-          'auto_codebase_select_failed'
-        );
-        return conversation;
+  // 1. Workflow-name matching: if the message mentions a workflow name that exists
+  //    in exactly one registered project, attach that project. Only fires when
+  //    there are multiple codebases (ambiguity worth resolving).
+  if (codebases.length > 1) {
+    const mentions = extractPossibleWorkflowMentions(message);
+    if (mentions.length > 0) {
+      const candidates: { codebase: Codebase; workflowNames: Set<string> }[] = [];
+      for (const codebase of codebases) {
+        try {
+          const result = await discoverWorkflowsWithConfig(codebase.default_cwd, loadConfig);
+          candidates.push({
+            codebase,
+            workflowNames: new Set(result.workflows.map(w => w.workflow.name.toLowerCase())),
+          });
+        } catch (error) {
+          getLog().debug(
+            { err: error as Error, codebaseId: codebase.id, cwd: codebase.default_cwd },
+            'auto_codebase_discovery_failed'
+          );
+        }
+      }
+      for (const mention of mentions) {
+        const matches = candidates.filter(c => c.workflowNames.has(mention));
+        if (matches.length === 1 && matches[0]) {
+          return attachCodebase(matches[0].codebase, `workflow:${mention}`);
+        }
       }
     }
+  }
+
+  // 2. Keyword routing from config (routing.codebases[].keywords).
+  //    Rules are evaluated in order; first match wins.
+  const routingEntries = config.routing?.codebases;
+  if (routingEntries && routingEntries.length > 0) {
+    const msgLower = message.toLowerCase();
+    for (const entry of routingEntries) {
+      const hit = entry.keywords.find(kw => msgLower.includes(kw.toLowerCase()));
+      if (hit) {
+        const codebase = codebases.find(cb => cb.name === entry.name);
+        if (codebase) {
+          return attachCodebase(codebase, `keyword:${hit}`);
+        }
+        getLog().warn(
+          { routingName: entry.name, hit },
+          'auto_codebase_routing_name_not_found'
+        );
+      }
+    }
+  }
+
+  // 3. Default codebase fallback (routing.defaultCodebase).
+  const defaultName = config.routing?.defaultCodebase;
+  if (defaultName) {
+    const codebase = codebases.find(cb => cb.name === defaultName);
+    if (codebase) {
+      return attachCodebase(codebase, 'default');
+    }
+    getLog().warn({ defaultName }, 'auto_codebase_default_not_found');
   }
 
   return conversation;
@@ -1797,7 +1826,7 @@ async function handleStreamMode(
   let newSessionId: string | undefined;
   let commandDetected = false;
   let commandFullyParsed = false;
-  let lastResult: { cost?: number; tokens?: TokenUsage; stopReason?: string } | undefined;
+  let lastResult: { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string } | undefined;
 
   for await (const msg of aiClient.sendQuery(
     fullPrompt,
@@ -1916,6 +1945,7 @@ async function handleStreamMode(
         cost: msg.cost,
         tokens: msg.tokens,
         stopReason: msg.stopReason,
+        model: msg.model,
       };
     }
   }
@@ -2029,7 +2059,7 @@ async function handleBatchMode(
   let newSessionId: string | undefined;
   let commandDetected = false;
   let commandFullyParsed = false;
-  let lastResult: { cost?: number; tokens?: TokenUsage; stopReason?: string } | undefined;
+  let lastResult: { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string } | undefined;
 
   for await (const msg of aiClient.sendQuery(
     fullPrompt,
@@ -2145,6 +2175,7 @@ async function handleBatchMode(
         cost: msg.cost,
         tokens: msg.tokens,
         stopReason: msg.stopReason,
+        model: msg.model,
       };
     }
 
@@ -2267,7 +2298,7 @@ async function handleBatchMode(
 async function maybeSendResultFooter(
   platform: IPlatformAdapter,
   conversationId: string,
-  info: { cost?: number; tokens?: TokenUsage; stopReason?: string } | undefined
+  info: { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string } | undefined
 ): Promise<void> {
   if (!info) return;
   if (info.cost === undefined && info.tokens === undefined) return;

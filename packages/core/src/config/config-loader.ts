@@ -510,6 +510,11 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
     result.concurrency.maxConversations = global.concurrency.maxConversations;
   }
 
+  // Routing rules (global only — not overridable per repo)
+  if (global.routing) {
+    result.routing = global.routing;
+  }
+
   return result;
 }
 

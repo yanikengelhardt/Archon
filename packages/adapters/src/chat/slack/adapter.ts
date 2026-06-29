@@ -212,7 +212,7 @@ export class SlackAdapter implements IPlatformAdapter {
    */
   async sendResultFooter(
     conversationId: string,
-    info: { cost?: number; tokens?: TokenUsage; stopReason?: string }
+    info: { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string }
   ): Promise<void> {
     const text = formatCostFooter(info);
     if (!text) return;

@@ -210,6 +210,8 @@ export type MessageChunk =
        * use `false` to surface a warning rather than swallow the loss.
        */
       resumed?: boolean;
+      /** Model identifier reported by the provider for this turn. */
+      model?: string;
     }
   | { type: 'rate_limit'; rateLimitInfo: Record<string, unknown> }
   | {
