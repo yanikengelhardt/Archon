@@ -497,15 +497,15 @@ export function StatsPage(): ReactElement {
     refetchInterval: 60_000,
   });
 
-  const { data: allWorkflows = [] } = useQuery({
+  const { data: workflowData } = useQuery({
     queryKey: ['workflows', selectedCwd ?? null],
     queryFn: () => listWorkflows(selectedCwd),
   });
 
-  const workflows = useMemo(
-    () => (localProjectId ? allWorkflows.filter(e => e.source === 'project') : allWorkflows),
-    [allWorkflows, localProjectId]
-  );
+  const workflows = useMemo(() => {
+    const all = workflowData?.workflows ?? [];
+    return localProjectId ? all.filter(e => e.source === 'project') : all;
+  }, [workflowData, localProjectId]);
 
   const { data: skills = [] } = useQuery({
     queryKey: ['codebase-skills', localProjectId],
