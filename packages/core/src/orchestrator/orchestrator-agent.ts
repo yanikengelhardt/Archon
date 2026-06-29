@@ -922,7 +922,7 @@ async function maybeAutoSelectCodebase(
         codebase_id: codebase.id,
         cwd: codebase.default_cwd,
       });
-      return db.getOrCreateConversation(platform.getPlatformType(), conversationId);
+      return await db.getOrCreateConversation(platform.getPlatformType(), conversationId);
     } catch (error) {
       getLog().warn(
         { err: error as Error, conversationId, selectedCodebaseId: codebase.id },
@@ -974,10 +974,7 @@ async function maybeAutoSelectCodebase(
         if (codebase) {
           return attachCodebase(codebase, `keyword:${hit}`);
         }
-        getLog().warn(
-          { routingName: entry.name, hit },
-          'auto_codebase_routing_name_not_found'
-        );
+        getLog().warn({ routingName: entry.name, hit }, 'auto_codebase_routing_name_not_found');
       }
     }
   }
@@ -1461,10 +1458,6 @@ export async function handleMessage(
       attachedFiles,
       workflowContext
     );
-    const scopedCodebase =
-      conversation.codebase_id !== null
-        ? codebases.find(c => c.id === conversation.codebase_id)
-        : undefined;
     let cwd: string;
     if (scopedCodebase !== undefined) {
       cwd = conversation.cwd ?? scopedCodebase.default_cwd;
@@ -1826,7 +1819,9 @@ async function handleStreamMode(
   let newSessionId: string | undefined;
   let commandDetected = false;
   let commandFullyParsed = false;
-  let lastResult: { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string } | undefined;
+  let lastResult:
+    | { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string }
+    | undefined;
 
   for await (const msg of aiClient.sendQuery(
     fullPrompt,
@@ -2059,7 +2054,9 @@ async function handleBatchMode(
   let newSessionId: string | undefined;
   let commandDetected = false;
   let commandFullyParsed = false;
-  let lastResult: { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string } | undefined;
+  let lastResult:
+    | { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string }
+    | undefined;
 
   for await (const msg of aiClient.sendQuery(
     fullPrompt,
