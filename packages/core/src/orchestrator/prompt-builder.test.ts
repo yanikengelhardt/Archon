@@ -125,6 +125,8 @@ describe('buildOrchestratorSystemAppend', () => {
     expect(result).toContain('# Archon Orchestrator');
     expect(result).toContain('## Active Project');
     expect(result).toContain('my-project');
+    expect(result).toContain('## Project Execution Rules');
+    expect(result).toContain('invoke that workflow instead of running the script directly');
   });
 
   test('falls back to orchestrator prompt when codebase_id does not match', () => {

@@ -140,6 +140,13 @@ export interface IPlatformAdapter {
   emitRetract?(conversationId: string): Promise<void>;
 
   /**
+   * Optional: signal that a turn has started without emitting assistant text.
+   * Chat adapters can implement this as a reaction/typing indicator so batch
+   * mode stays quiet while still giving users immediate feedback.
+   */
+  emitActivity?(conversationId: string): Promise<void>;
+
+  /**
    * Optional: Append a small footer summarising cost / token usage / stop reason
    * after a direct-chat assistant turn. Implemented by adapters that surface
    * usage info in-band (e.g. Slack posts an italic context line). No-op for

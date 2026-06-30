@@ -1855,6 +1855,8 @@ async function handleStreamMode(
     | { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string }
     | undefined;
 
+  await maybeEmitActivity(platform, conversationId);
+
   for await (const msg of aiClient.sendQuery(
     fullPrompt,
     cwd,
@@ -2089,6 +2091,8 @@ async function handleBatchMode(
   let lastResult:
     | { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string }
     | undefined;
+
+  await maybeEmitActivity(platform, conversationId);
 
   for await (const msg of aiClient.sendQuery(
     fullPrompt,
@@ -2337,6 +2341,18 @@ async function maybeSendResultFooter(
     await platform.sendResultFooter(conversationId, info);
   } catch (error) {
     getLog().warn({ err: toError(error), conversationId }, 'orchestrator.result_footer_failed');
+  }
+}
+
+async function maybeEmitActivity(
+  platform: IPlatformAdapter,
+  conversationId: string
+): Promise<void> {
+  if (!platform.emitActivity) return;
+  try {
+    await platform.emitActivity(conversationId);
+  } catch (error) {
+    getLog().debug({ err: toError(error), conversationId }, 'orchestrator.activity_emit_failed');
   }
 }
 

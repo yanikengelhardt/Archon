@@ -27,6 +27,7 @@ function getLog(): ReturnType<typeof createLogger> {
 }
 
 const MAX_MARKDOWN_BLOCK_LENGTH = 12000; // Slack markdown block limit
+const ACTIVITY_REACTION = 'eyes';
 
 /** Slack channel + message ts pair used for reactions and edits. */
 export interface SlackMessageRef {
@@ -237,6 +238,36 @@ export class SlackAdapter implements IPlatformAdapter {
       // Cost footer is informational only — never let it fail the conversation.
       getLog().warn({ err: error as Error, channel }, 'slack.result_footer_failed');
     }
+  }
+
+  /**
+   * Lightweight "I'm working" signal for batch-mode turns. Prefer a reaction on
+   * the triggering message so Slack history stays clean; fall back to one short
+   * threaded message only when the inbound trigger is unavailable.
+   */
+  async emitActivity(conversationId: string): Promise<void> {
+    const trigger = this.getTriggeringMessage(conversationId);
+    if (trigger) {
+      try {
+        await this.app.client.reactions.add({
+          channel: trigger.channel,
+          timestamp: trigger.ts,
+          name: ACTIVITY_REACTION,
+        });
+        return;
+      } catch (error) {
+        const err = error as Error & { data?: { error?: string } };
+        const slackError = err.data?.error;
+        if (slackError === 'already_reacted') {
+          return;
+        }
+        if (slackError !== 'missing_scope' && slackError !== 'not_allowed_token_type') {
+          getLog().debug({ err, conversationId }, 'slack.activity_reaction_failed');
+        }
+      }
+    }
+
+    await this.sendMessage(conversationId, '_Working on it..._');
   }
 
   /**

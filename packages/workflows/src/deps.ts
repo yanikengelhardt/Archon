@@ -64,6 +64,7 @@ export interface IWorkflowPlatform {
   getPlatformType(): string;
   sendStructuredEvent?(conversationId: string, event: MessageChunk): Promise<void>;
   emitRetract?(conversationId: string): Promise<void>;
+  emitActivity?(conversationId: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

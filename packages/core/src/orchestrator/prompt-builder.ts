@@ -197,6 +197,13 @@ This conversation is scoped to **${scopedCodebase.name}**. Use this project for 
 ## Active Project
 
 ${formatProjectSection(scopedCodebase)}
+
+## Project Execution Rules
+
+- For project data or metric pulls, first check the Available Workflows section. If a workflow description, trigger, or example matches the requested data source/metric, invoke that workflow instead of running the script directly in chat.
+- Your provider working directory is the active project's directory. Use local files and scripts from that repo directly.
+- Do not assume a credential is unavailable just because it is not present in the inherited shell environment. Many project scripts intentionally load the repo's own \`.env\` file themselves.
+- Only run repo scripts directly when no listed workflow clearly matches the request, or when you are executing inside a workflow node. Only report missing credentials/files after the script itself fails or the required file is actually absent.
 `;
 
   if (otherCodebases.length > 0) {

@@ -26,6 +26,7 @@ mock.module('@archon/paths', () => ({
 
 // Create mock functions
 const mockPostMessage = mock(() => Promise.resolve(undefined));
+const mockReactionAdd = mock(() => Promise.resolve(undefined));
 const mockReplies = mock(() => Promise.resolve({ messages: [] }));
 const mockUsersInfo = mock(() =>
   Promise.resolve({
@@ -47,6 +48,9 @@ const mockApp = {
   client: {
     chat: {
       postMessage: mockPostMessage,
+    },
+    reactions: {
+      add: mockReactionAdd,
     },
     conversations: {
       replies: mockReplies,
@@ -100,6 +104,7 @@ describe('SlackAdapter', () => {
   beforeEach(() => {
     delete process.env.SLACK_ALLOWED_USER_IDS;
     mockPostMessage.mockClear();
+    mockReactionAdd.mockClear();
     mockReplies.mockClear();
     mockEvent.mockClear();
     mockUse.mockClear();
@@ -591,6 +596,84 @@ describe('SlackAdapter', () => {
       expect(adapter.getTriggeringMessage(`C1:${CAP + 4}.0`)).toEqual({
         channel: 'C1',
         ts: `${CAP + 4}.0`,
+      });
+    });
+  });
+
+  describe('activity signal', () => {
+    test('adds a reaction to the triggering message', async () => {
+      mockEvent.mockClear();
+      const adapter = new SlackAdapter('xoxb-fake', 'xapp-fake');
+      adapter.onMessage(async () => {});
+      await adapter.start();
+
+      const handler = getRegisteredEventHandler('app_mention');
+      await handler({
+        event: { text: '<@UBOT> hello', user: 'U123', channel: 'C1', ts: '123.456' },
+      });
+
+      await adapter.emitActivity('C1:123.456');
+
+      expect(mockReactionAdd).toHaveBeenCalledWith({
+        channel: 'C1',
+        timestamp: '123.456',
+        name: 'eyes',
+      });
+      expect(mockPostMessage).not.toHaveBeenCalled();
+    });
+
+    test('falls back to a short threaded message without a trigger ref', async () => {
+      const adapter = new SlackAdapter('xoxb-fake', 'xapp-fake');
+
+      await adapter.emitActivity('C1:123.456');
+
+      expect(mockReactionAdd).not.toHaveBeenCalled();
+      expect(mockPostMessage).toHaveBeenCalledWith({
+        channel: 'C1',
+        thread_ts: '123.456',
+        blocks: [
+          {
+            type: 'markdown',
+            text: '_Working on it..._',
+          },
+        ],
+        text: '_Working on it..._',
+      });
+    });
+
+    test('falls back to a short threaded message when reactions are not permitted', async () => {
+      mockEvent.mockClear();
+      mockReactionAdd.mockImplementationOnce(() =>
+        Promise.reject(
+          Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } })
+        )
+      );
+      const adapter = new SlackAdapter('xoxb-fake', 'xapp-fake');
+      adapter.onMessage(async () => {});
+      await adapter.start();
+
+      const handler = getRegisteredEventHandler('app_mention');
+      await handler({
+        event: { text: '<@UBOT> hello', user: 'U123', channel: 'C1', ts: '123.456' },
+      });
+
+      await adapter.emitActivity('C1:123.456');
+
+      expect(mockReactionAdd).toHaveBeenCalledWith({
+        channel: 'C1',
+        timestamp: '123.456',
+        name: 'eyes',
+      });
+      expect(mockPostMessage).toHaveBeenCalledWith({
+        channel: 'C1',
+        thread_ts: '123.456',
+        blocks: [
+          {
+            type: 'markdown',
+            text: '_Working on it..._',
+          },
+        ],
+        text: '_Working on it..._',
       });
     });
   });
