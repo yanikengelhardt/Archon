@@ -22,24 +22,22 @@ describe('formatCostFooter', () => {
     expect(formatCostFooter({ cost: 0.0234 })).toBe('_$0.0234_');
   });
 
-  test('formats tokens as separate in/out', () => {
-    expect(formatCostFooter({ tokens: { input: 1500, output: 500 } })).toBe(
-      '_in: 1.5k · out: 500_'
-    );
+  test('formats output tokens only (input is omitted)', () => {
+    expect(formatCostFooter({ tokens: { input: 1500, output: 500 } })).toBe('_out: 500_');
   });
 
-  test('omits zero input or output', () => {
+  test('omits the footer when only input is present', () => {
     expect(formatCostFooter({ tokens: { input: 0, output: 500 } })).toBe('_out: 500_');
-    expect(formatCostFooter({ tokens: { input: 1500, output: 0 } })).toBe('_in: 1.5k_');
+    expect(formatCostFooter({ tokens: { input: 1500, output: 0 } })).toBeNull();
   });
 
-  test('formats millions with M suffix', () => {
+  test('formats output millions with M suffix', () => {
     expect(formatCostFooter({ tokens: { input: 1_200_000, output: 800_000 } })).toBe(
-      '_in: 1.2M · out: 800.0k_'
+      '_out: 800.0k_'
     );
   });
 
-  test('combines model, cost, tokens, and stopReason', () => {
+  test('combines model, cost, output tokens, and stopReason', () => {
     expect(
       formatCostFooter({
         model: 'gpt-5.4',
@@ -47,17 +45,17 @@ describe('formatCostFooter', () => {
         tokens: { input: 5000, output: 7500 },
         stopReason: 'end_turn',
       })
-    ).toBe('_gpt-5.4 · $0.1234 · in: 5.0k · out: 7.5k · stop: end_turn_');
+    ).toBe('_gpt-5.4 · $0.1234 · out: 7.5k · stop: end_turn_');
   });
 
-  test('combines cost, tokens, and stopReason without model', () => {
+  test('combines cost, output tokens, and stopReason without model', () => {
     expect(
       formatCostFooter({
         cost: 0.1234,
         tokens: { input: 5000, output: 7500 },
         stopReason: 'end_turn',
       })
-    ).toBe('_$0.1234 · in: 5.0k · out: 7.5k · stop: end_turn_');
+    ).toBe('_$0.1234 · out: 7.5k · stop: end_turn_');
   });
 
   test('drops non-finite cost', () => {

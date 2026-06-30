@@ -79,9 +79,10 @@ export function formatCostFooter(input: {
     parts.push(`$${input.cost.toFixed(4)}`);
   }
   if (input.tokens) {
-    const inp = input.tokens.input ?? 0;
+    // Only surface output tokens. The SDK's cumulative `input` count balloons
+    // into the millions across agentic turns (most of it cache-read), which is
+    // misleading to show — the `$` cost already reflects the cached discount.
     const out = input.tokens.output ?? 0;
-    if (inp > 0) parts.push(`in: ${formatTokenCount(inp)}`);
     if (out > 0) parts.push(`out: ${formatTokenCount(out)}`);
   }
   if (input.stopReason) {
