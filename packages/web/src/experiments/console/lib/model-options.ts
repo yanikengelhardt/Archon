@@ -71,6 +71,9 @@ export const CLAUDE_MODEL_OPTIONS: readonly ModelOption[] = [
  * and newly shipped model ids.
  */
 export const CODEX_MODEL_OPTIONS: readonly ModelOption[] = [
+  { value: 'gpt-5.6-sol' },
+  { value: 'gpt-5.6-terra' },
+  { value: 'gpt-5.6-luna' },
   { value: 'gpt-5.5' },
   { value: 'gpt-5.4' },
   { value: 'gpt-5.4-mini' },

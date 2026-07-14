@@ -2,7 +2,7 @@
  * Slack platform adapter using @slack/bolt with Socket Mode
  * Handles message sending with markdown block formatting for AI responses
  */
-import { App, LogLevel, type SlashCommand } from '@slack/bolt';
+import { App, LogLevel, SocketModeReceiver, type SlashCommand } from '@slack/bolt';
 import type { IPlatformAdapter, MessageMetadata } from '@archon/core';
 import {
   isPerUserGitHubEnabled,
@@ -34,6 +34,8 @@ export interface SlackMessageRef {
   channel: string;
   ts: string;
 }
+
+type SlackConnectionState = 'starting' | 'online' | 'reconnecting' | 'offline';
 
 /** Cap on the in-memory triggering-message map to prevent unbounded growth. */
 const MAX_TRACKED_TRIGGERS = 1000;
@@ -95,7 +97,10 @@ function getSlackBodyInfo(body: unknown): SlackBodyInfo {
 
 export class SlackAdapter implements IPlatformAdapter {
   private app: App;
+  private socketModeReceiver: SocketModeReceiver;
   private streamingMode: 'stream' | 'batch';
+  private connectionState: SlackConnectionState = 'starting';
+  private lastOnlineAt: Date | undefined;
   private messageHandler: ((event: SlackMessageEvent) => Promise<void>) | null = null;
   private allowedUserIds: string[];
   /** Maps conversation ID → triggering Slack message so the bridge can react / edit. */
@@ -116,13 +121,17 @@ export class SlackAdapter implements IPlatformAdapter {
   private missingScopeLogged = false;
 
   constructor(botToken: string, appToken: string, mode: 'stream' | 'batch' = 'batch') {
+    this.socketModeReceiver = new SocketModeReceiver({
+      appToken,
+      logLevel: LogLevel.INFO,
+    });
     this.app = new App({
       token: botToken,
-      socketMode: true,
-      appToken: appToken,
+      receiver: this.socketModeReceiver,
       logLevel: LogLevel.INFO,
     });
     this.streamingMode = mode;
+    this.bindConnectionLifecycle();
 
     // Parse Slack user whitelist (optional - empty = open access)
     this.allowedUserIds = parseAllowedUserIds(process.env.SLACK_ALLOWED_USER_IDS);
@@ -133,6 +142,44 @@ export class SlackAdapter implements IPlatformAdapter {
     }
 
     getLog().info({ mode }, 'slack.adapter_initialized');
+  }
+
+  /**
+   * Return the last known Socket Mode connection state. The Socket Mode
+   * client owns the ping/pong heartbeat, so no adapter heartbeat is needed.
+   */
+  getConnectionStatus(): {
+    state: SlackConnectionState;
+    lastOnlineAt?: Date;
+  } {
+    return {
+      state: this.connectionState,
+      lastOnlineAt: this.lastOnlineAt,
+    };
+  }
+
+  private bindConnectionLifecycle(): void {
+    const client = this.socketModeReceiver.client;
+    client.on('connecting', () => {
+      this.connectionState = 'starting';
+      getLog().info('slack.connection_connecting');
+    });
+    client.on('connected', () => {
+      this.connectionState = 'online';
+      this.lastOnlineAt = new Date();
+      getLog().info({ lastOnlineAt: this.lastOnlineAt.toISOString() }, 'slack.connection_online');
+    });
+    client.on('reconnecting', () => {
+      this.connectionState = 'reconnecting';
+      getLog().warn('slack.connection_reconnecting');
+    });
+    client.on('disconnected', (error?: Error) => {
+      this.connectionState = 'offline';
+      getLog().warn({ err: error }, 'slack.connection_offline');
+    });
+    client.on('error', (error: Error) => {
+      getLog().warn({ err: error }, 'slack.connection_error');
+    });
   }
 
   /**

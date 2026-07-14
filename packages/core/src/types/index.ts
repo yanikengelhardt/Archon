@@ -95,6 +95,16 @@ export interface MessageMetadata {
 
 export interface IPlatformAdapter {
   /**
+   * Optional connection health for adapters backed by a persistent connection.
+   * `lastOnlineAt` is the last confirmed connection to the platform, not a
+   * guarantee that the host had general internet connectivity afterward.
+   */
+  getConnectionStatus?(): {
+    state: 'starting' | 'online' | 'reconnecting' | 'offline';
+    lastOnlineAt?: Date;
+  };
+
+  /**
    * Send a message to the platform
    */
   sendMessage(conversationId: string, message: string, metadata?: MessageMetadata): Promise<void>;

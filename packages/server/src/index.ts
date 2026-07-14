@@ -185,7 +185,11 @@ function createMessageErrorHandler(
     const errorRef = randomUUID();
     getLog().error({ err, platform, conversationId, errorRef }, 'message_processing_failed');
     try {
-      const formatted = classifyAndFormatError(err);
+      const connectionStatus = adapter.getConnectionStatus?.();
+      const formatted =
+        platform === 'Slack' && connectionStatus && connectionStatus.state !== 'online'
+          ? formatSlackOfflineMessage(connectionStatus.lastOnlineAt)
+          : classifyAndFormatError(err);
       const userMessage =
         formatted === GENERIC_UNEXPECTED_ERROR_MESSAGE
           ? `${GENERIC_UNEXPECTED_ERROR_MESSAGE} (ref: ${errorRef})`
@@ -198,6 +202,17 @@ function createMessageErrorHandler(
       );
     }
   };
+}
+
+function formatSlackOfflineMessage(lastOnlineAt: Date | undefined): string {
+  const lastOnline = lastOnlineAt
+    ? ` Last connected to Slack at ${lastOnlineAt.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Europe/Berlin',
+      })}.`
+    : '';
+  return `⚠️ SEO-Bot is currently offline.${lastOnline} Please try again later. If this is urgent, ask Yanik when SEO-Bot is expected to be back online.`;
 }
 
 /**

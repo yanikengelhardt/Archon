@@ -43,6 +43,7 @@ const mockStart = mock(() => Promise.resolve(undefined));
 const mockStop = mock(() => Promise.resolve(undefined));
 const mockCommand = mock(() => {});
 const mockAction = mock(() => {});
+const mockSocketModeOn = mock(() => {});
 
 const mockApp = {
   client: {
@@ -70,6 +71,7 @@ const mockApp = {
 // Mock @slack/bolt
 mock.module('@slack/bolt', () => ({
   App: mock(() => mockApp),
+  SocketModeReceiver: mock(() => ({ client: { on: mockSocketModeOn } })),
   LogLevel: {
     INFO: 'info',
   },
@@ -110,6 +112,7 @@ describe('SlackAdapter', () => {
     mockUse.mockClear();
     mockStart.mockClear();
     mockStop.mockClear();
+    mockSocketModeOn.mockClear();
   });
 
   afterAll(() => {
