@@ -63,6 +63,7 @@ export const CLAUDE_MODEL_OPTIONS: readonly ModelOption[] = [
   { value: 'sonnet' },
   { value: 'opus' },
   { value: 'haiku' },
+  { value: 'fable' },
 ];
 
 /**
