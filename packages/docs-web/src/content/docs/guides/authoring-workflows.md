@@ -187,6 +187,7 @@ nodes:
 | `bash` | string | Shell script (no AI). Stdout captured as `$nodeId.output`. Optional `timeout` (ms, default 120000) |
 | `script` | string | TypeScript/JavaScript (via `bun`) or Python (via `uv`) — inline code or named reference to `.archon/scripts/`. Stdout captured as `$nodeId.output`. Requires `runtime: bun` or `runtime: uv`. Optional `deps` (uv only) and `timeout` (ms, default 120000). See [Script Nodes](/guides/script-nodes/) |
 | `loop` | object | Iterative AI prompt until completion signal. See [Loop Nodes](/guides/loop-nodes/) |
+| `loop_group` | object | Multi-node sub-DAG body repeated per iteration until a completion signal. See [Cross-Node Loops](/guides/loop-nodes/#cross-node-loops-with-loop_group) |
 | `approval` | object | Pauses workflow for human review. See [Approval Nodes](/guides/approval-nodes/) |
 | `cancel` | string | Terminates the workflow run with a reason string. Uses existing cancellation plumbing — in-flight parallel nodes are stopped |
 
@@ -486,9 +487,11 @@ Both sources coexist — inline agents and on-disk agents are both available to 
 
 ## Retry Configuration
 
-Every node automatically retries on **transient** errors (SDK subprocess crashes, rate limits, network timeouts) using a default configuration: **2 retries** (3 total attempts), **3 s base delay** with exponential backoff. You will see a platform notification before each retry attempt.
+**AI nodes** (`command:`, `prompt:`) automatically retry on **transient** errors (SDK subprocess crashes, rate limits, network timeouts) using a default configuration: **2 retries** (3 total attempts), **3 s base delay** with exponential backoff. You will see a platform notification before each retry attempt.
 
-To customise, add a `retry:` block:
+**Deterministic nodes** (`bash:`, `script:`) do **not** auto-retry — they run exactly once unless you add an explicit `retry:` block. This keeps side-effectful scripts (deploys, `gh` mutations, external CLIs) from being silently re-run on a transient-looking failure; opt in per node when re-running is safe. `loop:` and `loop_group:` manage their own iteration and don't accept `retry:`.
+
+To enable or customise retry, add a `retry:` block:
 
 ```yaml
 nodes:
@@ -504,13 +507,22 @@ nodes:
     retry:
       max_attempts: 4       # 4 retries = 5 total attempts
       on_error: all         # Retry even non-transient errors (use with caution)
+
+  - id: deploy               # bash/script only retry when retry: is set
+    bash: "./deploy.sh"
+    retry:
+      max_attempts: 3
+      delay_ms: 5000
+      on_error: all
 ```
 
 ### Retry Fields
 
-| Field | Type | Default | Constraints | Description |
-|-------|------|---------|-------------|-------------|
-| `max_attempts` | number | `2` | 1–5 | Number of retry attempts (not including the initial attempt). `1` = one retry (2 total attempts) |
+`retry:` is required to enable retry on `bash:`/`script:` nodes; on `command:`/`prompt:` nodes it customises the defaults below.
+
+| Field | Type | Default (AI nodes) | Constraints | Description |
+|-------|------|--------------------|-------------|-------------|
+| `max_attempts` | number | `2` | 1–5 | Number of retry attempts (not including the initial attempt). `1` = one retry (2 total attempts). No default on `bash:`/`script:` — omitting `retry:` means a single attempt |
 | `delay_ms` | number | `3000` | 1000–60000 | Base delay in ms before the first retry. Doubles each attempt (exponential backoff) |
 | `on_error` | `'transient'` \| `'all'` | `'transient'` | — | Which errors trigger a retry. `'transient'` = SDK crashes, rate limits, network timeouts only. `'all'` = any error including unknown errors (FATAL errors such as auth failures are never retried regardless) |
 
@@ -539,12 +551,13 @@ Archon uses two independent retry layers:
 ```
 SDK subprocess retry (claude.ts)  — 3 total attempts, 2 s base backoff
     ↓ only if all SDK retries exhausted
-Node retry (dag-executor)  — default 2 retries, 3 s base backoff
+Node retry (dag-executor)  — AI nodes: default 2 retries, 3 s base backoff;
+                             bash/script: only when retry: is set
     ↓ only if all node retries exhausted
 Workflow fails → user opts in to resume on next invocation
 ```
 
-This means a single transient crash may trigger up to **3 SDK retries** before a single node retry attempt is consumed.
+This means a single transient crash may trigger up to **3 SDK retries** before a single node retry attempt is consumed. The SDK layer only applies to AI nodes; `bash:`/`script:` nodes have no SDK layer, so their `retry:` block wraps the raw subprocess directly.
 
 > **DAG resume**: For `nodes:` (DAG) workflows, resume is opt-in — pass `--resume` to `archon workflow run`, run `archon workflow resume <id>`, or use the web UI resume button. Plain `archon workflow run <name>` always starts a fresh run. See [DAG Resume on Failure](#dag-resume-on-failure) below.
 
@@ -685,6 +698,31 @@ If the stored session is gone (Codex thread expired, Pi JSONL missing or moved, 
 
 The node still completes on that fresh session, and its new session id is persisted so the *next* run continues from it. The node is **not** re-run — the fresh session is already a clean start, so re-running would only repeat it. Expect this only for `persist_session` nodes whose prior session became unavailable; warm resumes and first-time runs are unaffected.
 
+#### By-reference recovery via scope artifacts
+
+A lost session doesn't have to mean lost context. Workflows that use `persist_session` also get a **stable cross-invocation artifact scope** at `scopes/<workflow>/<scope>/` (a sibling of the per-run `runs/<id>/` directory, under the same artifacts root; the scope is the conversation UUID — the same key sessions use). Whenever a persistence-participating node also declares an `output_type`, the engine mirrors its typed output sidecar (`nodes/<id>.md` + `nodes/<id>.meta.json`) into that scope directory in addition to the run directory.
+
+On a cold resume, the warning then goes further: if the scope directory holds typed artifacts from an *earlier* invocation, the message lists them **by reference** (file paths — never pasted content), so the recovered context can be read on demand:
+
+> Artifacts from the previous invocation are available for recovery (read on demand):
+> - plan: `~/.archon/workspaces/acme/widget/artifacts/scopes/feature-dev/<conversation>/nodes/planner.md`
+
+To opt in to recovery, give your `persist_session` nodes an `output_type`:
+
+```yaml
+nodes:
+  - id: planner
+    prompt: "Plan the implementation for: $ARGUMENTS"
+    persist_session: true
+    output_type: plan   # mirrored to the durable scope → recoverable after a cold resume
+```
+
+Notes:
+
+- **Opt-in only.** Workflows without `persist_session` get no scope directory, no mirroring, and no pointer — default behavior is unchanged. Persist nodes without `output_type` keep session continuity but leave nothing behind for recovery.
+- **Last writer wins.** Concurrent runs of the same workflow in the same scope write per-node files into the shared scope directory; the most recent run's output for a given node is what a later cold resume sees.
+- **CLI caveat.** Each `archon workflow run` mints a fresh conversation UUID (a fresh scope) unless you pass `--conversation-id <id>` — the same caveat as session persistence itself.
+
 ### Distinct from `AgentRequestOptions.persistSession`
 
 The Claude Agent SDK also has a `persistSession` flag controlling whether the SDK writes its session transcript to disk. That is a *different* concept — local file persistence inside the SDK. This `persist_session:` field is about Archon's database-stored cross-run session ID for workflow nodes. The two operate at different layers and don't conflict.
@@ -795,9 +833,6 @@ provider: codex
 model: gpt-5.4
 modelReasoningEffort: medium    # 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 webSearchMode: live             # 'disabled' | 'cached' | 'live'
-additionalDirectories:
-  - /absolute/path/to/other/repo
-  - /path/to/shared/library
 ```
 
 **Model reasoning effort:**
@@ -809,11 +844,6 @@ additionalDirectories:
 - `disabled` - No web access (default)
 - `cached` - Use cached search results
 - `live` - Real-time web search
-
-**Additional directories:**
-- Codex can access files outside the codebase
-- Useful for shared libraries, documentation repos
-- Must be absolute paths
 
 ### Web Execution Mode
 

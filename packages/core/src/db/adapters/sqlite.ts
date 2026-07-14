@@ -187,6 +187,11 @@ export class SqliteAdapter implements IDatabase {
       if (!codebaseColNames.has('default_branch')) {
         this.db.run('ALTER TABLE remote_agent_codebases ADD COLUMN default_branch TEXT');
       }
+      if (!codebaseColNames.has('kind')) {
+        this.db.run(
+          "ALTER TABLE remote_agent_codebases ADD COLUMN kind TEXT NOT NULL DEFAULT 'repo'"
+        );
+      }
     } catch (e: unknown) {
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_codebases_columns_failed');
     }
@@ -300,6 +305,22 @@ export class SqliteAdapter implements IDatabase {
         { err: e as Error },
         'db.sqlite_migration_isolation_environments_columns_failed'
       );
+    }
+
+    // User AI prefs columns. #1998: default_model is the per-user default
+    // CHAT model, written atomically with default_provider. The table itself
+    // shipped with Phase 3 (#1948), so pre-existing installs need this ALTER —
+    // CREATE TABLE IF NOT EXISTS in createSchema() is a no-op for them.
+    try {
+      const cols = this.db.prepare("PRAGMA table_info('remote_agent_user_ai_prefs')").all() as {
+        name: string;
+      }[];
+      const colNames = new Set(cols.map(c => c.name));
+      if (!colNames.has('default_model')) {
+        this.db.run('ALTER TABLE remote_agent_user_ai_prefs ADD COLUMN default_model TEXT');
+      }
+    } catch (e: unknown) {
+      getLog().warn({ err: e as Error }, 'db.sqlite_migration_user_ai_prefs_columns_failed');
     }
 
     // #1955: credential rows are vendor-keyed (claude→anthropic, codex→openai,
@@ -418,6 +439,7 @@ export class SqliteAdapter implements IDatabase {
         tiers TEXT,
         aliases TEXT,
         default_provider TEXT,
+        default_model TEXT,
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now')),
         UNIQUE(user_id)
@@ -431,6 +453,7 @@ export class SqliteAdapter implements IDatabase {
         default_cwd TEXT NOT NULL,
         default_branch TEXT,
         ai_assistant_type TEXT DEFAULT 'claude',
+        kind TEXT NOT NULL DEFAULT 'repo' CHECK (kind IN ('repo', 'folder')),
         commands TEXT DEFAULT '{}',
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now'))

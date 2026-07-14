@@ -72,6 +72,17 @@ mock.module('@archon/core', () => ({
       alreadyExisted: false,
     })
   ),
+  registerFolder: mock(() =>
+    Promise.resolve({
+      codebaseId: 'cb-folder',
+      name: 'platform',
+      repositoryUrl: null,
+      defaultCwd: '/test/path',
+      defaultBranch: null,
+      commandCount: 0,
+      alreadyExisted: false,
+    })
+  ),
   loadConfig: mock(() => Promise.resolve({ defaults: {} })),
   generateAndSetTitle: mock(() => Promise.resolve()),
   loadRepoConfig: mock(() => Promise.resolve(null)),
@@ -79,6 +90,15 @@ mock.module('@archon/core', () => ({
   createWorkflowStore: mock(() => ({
     createWorkflowEvent: mock(() => Promise.resolve()),
   })),
+  // requires: [github] gate. Default to a solo-install posture (disabled) so the
+  // gate is a no-op for every existing test; the gate-specific tests below flip
+  // isPerUserGitHubEnabled on per-invocation.
+  isPerUserGitHubEnabled: mock(() => false),
+  getDecryptedAccessToken: mock(() => Promise.resolve(null)),
+}));
+
+mock.module('@archon/core/db/users', () => ({
+  findOrCreateUserByPlatformIdentity: mock(() => Promise.resolve({ id: 'user-cli-1' })),
 }));
 
 mock.module('@archon/workflows/workflow-discovery', () => ({
@@ -125,6 +145,7 @@ mock.module('@archon/core/db/conversations', () => ({
 
 mock.module('@archon/core/db/codebases', () => ({
   findCodebaseByDefaultCwd: mock(() => Promise.resolve(null)),
+  findCodebaseByPathPrefix: mock(() => Promise.resolve(null)),
   getCodebase: mock(() => Promise.resolve(null)),
 }));
 
@@ -144,6 +165,7 @@ mock.module('@archon/core/db/workflows', () => ({
   findResumableRun: mock(() => Promise.resolve(null)),
   resumeWorkflowRun: mock(() => Promise.resolve(null)),
   getWorkflowRun: mock(() => Promise.resolve(null)),
+  findWorkflowRunsByIdPrefix: mock(() => Promise.resolve([])),
   updateWorkflowRun: mock(() => Promise.resolve()),
   listWorkflowRuns: mock(() => Promise.resolve([])),
   listDashboardRuns: mock(() =>
@@ -362,6 +384,167 @@ describe('workflowListCommand', () => {
     await expect(workflowListCommand('/test/path')).rejects.toThrow(
       'Error loading workflows: Permission denied'
     );
+  });
+});
+
+describe('workflowRunCommand — requires: [github] gate', () => {
+  let consoleSpy: ReturnType<typeof spyOn>;
+  let priorArchonUserId: string | undefined;
+
+  beforeEach(async () => {
+    consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+    // Deterministic CLI identity (resolveCliUserId reads ARCHON_USER_ID).
+    priorArchonUserId = process.env.ARCHON_USER_ID;
+    process.env.ARCHON_USER_ID = 'cli-tester';
+
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    const { isPerUserGitHubEnabled, getDecryptedAccessToken } = await import('@archon/core');
+    const usersDb = await import('@archon/core/db/users');
+    (executeWorkflow as ReturnType<typeof mock>).mockClear();
+    (isPerUserGitHubEnabled as ReturnType<typeof mock>).mockClear();
+    (getDecryptedAccessToken as ReturnType<typeof mock>).mockClear();
+    (usersDb.findOrCreateUserByPlatformIdentity as ReturnType<typeof mock>).mockClear();
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+    if (priorArchonUserId === undefined) delete process.env.ARCHON_USER_ID;
+    else process.env.ARCHON_USER_ID = priorArchonUserId;
+  });
+
+  it('blocks a requires:[github] workflow before any cost when enabled and not connected', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const { isPerUserGitHubEnabled, getDecryptedAccessToken } = await import('@archon/core');
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'ship', requires: ['github'] }, 'project')],
+      errors: [],
+    });
+    (isPerUserGitHubEnabled as ReturnType<typeof mock>).mockReturnValueOnce(true);
+    (getDecryptedAccessToken as ReturnType<typeof mock>).mockResolvedValueOnce(null);
+
+    await expect(
+      workflowRunCommand('/repo/root', 'ship', 'go', { noWorktree: true })
+    ).rejects.toThrow(/connected github identity/i);
+
+    // Hard-blocked before any worktree/AI cost — executeWorkflow never ran.
+    expect(executeWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('allows the run when the acting CLI user has a connected GitHub identity', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const { isPerUserGitHubEnabled, getDecryptedAccessToken } = await import('@archon/core');
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'ship', requires: ['github'] }, 'project')],
+      errors: [],
+    });
+    (isPerUserGitHubEnabled as ReturnType<typeof mock>).mockReturnValueOnce(true);
+    (getDecryptedAccessToken as ReturnType<typeof mock>).mockResolvedValueOnce('gho_token');
+    (executeWorkflow as ReturnType<typeof mock>).mockResolvedValueOnce({
+      success: true,
+      workflowRunId: 'run-ok',
+    });
+
+    await workflowRunCommand('/repo/root', 'ship', 'go', { noWorktree: true });
+
+    expect(executeWorkflow).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op on solo installs (per-user GitHub disabled) even when github is required', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const { isPerUserGitHubEnabled, getDecryptedAccessToken } = await import('@archon/core');
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'ship', requires: ['github'] }, 'project')],
+      errors: [],
+    });
+    // Default mock returns false; be explicit for readability.
+    (isPerUserGitHubEnabled as ReturnType<typeof mock>).mockReturnValueOnce(false);
+    (executeWorkflow as ReturnType<typeof mock>).mockResolvedValueOnce({
+      success: true,
+      workflowRunId: 'run-ok',
+    });
+
+    await workflowRunCommand('/repo/root', 'ship', 'go', { noWorktree: true });
+
+    expect(executeWorkflow).toHaveBeenCalledTimes(1);
+    // Gate short-circuited on the env check — no token lookup happened.
+    expect(getDecryptedAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve GitHub connection for a workflow without requires', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const { isPerUserGitHubEnabled, getDecryptedAccessToken } = await import('@archon/core');
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'assist' }, 'project')],
+      errors: [],
+    });
+    // Even with per-user GitHub enabled, a workflow with no `requires` skips the lookup.
+    (isPerUserGitHubEnabled as ReturnType<typeof mock>).mockReturnValueOnce(true);
+    (executeWorkflow as ReturnType<typeof mock>).mockResolvedValueOnce({
+      success: true,
+      workflowRunId: 'run-ok',
+    });
+
+    await workflowRunCommand('/repo/root', 'assist', 'go', { noWorktree: true });
+
+    expect(executeWorkflow).toHaveBeenCalledTimes(1);
+    expect(getDecryptedAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the acting CLI user identity cannot be resolved', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const { isPerUserGitHubEnabled, getDecryptedAccessToken } = await import('@archon/core');
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'ship', requires: ['github'] }, 'project')],
+      errors: [],
+    });
+    (isPerUserGitHubEnabled as ReturnType<typeof mock>).mockReturnValueOnce(true);
+
+    // No resolvable CLI identity → resolveCliUserId() returns null → treated as
+    // "not connected" (fail closed). Clear every identity source for this test.
+    const savedUser = process.env.USER;
+    const savedUsername = process.env.USERNAME;
+    delete process.env.ARCHON_USER_ID;
+    delete process.env.USER;
+    delete process.env.USERNAME;
+    try {
+      await expect(
+        workflowRunCommand('/repo/root', 'ship', 'go', { noWorktree: true })
+      ).rejects.toThrow(/connected github identity/i);
+    } finally {
+      if (savedUser !== undefined) process.env.USER = savedUser;
+      if (savedUsername !== undefined) process.env.USERNAME = savedUsername;
+    }
+
+    // Never resolved a token, and never reached execution.
+    expect(getDecryptedAccessToken).not.toHaveBeenCalled();
+    expect(executeWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the identity/token lookup throws', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const { isPerUserGitHubEnabled } = await import('@archon/core');
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    const usersDb = await import('@archon/core/db/users');
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'ship', requires: ['github'] }, 'project')],
+      errors: [],
+    });
+    (isPerUserGitHubEnabled as ReturnType<typeof mock>).mockReturnValueOnce(true);
+    (usersDb.findOrCreateUserByPlatformIdentity as ReturnType<typeof mock>).mockRejectedValueOnce(
+      new Error('db unavailable')
+    );
+
+    // Lookup failure is swallowed inside the gate and defaults to "not connected".
+    await expect(
+      workflowRunCommand('/repo/root', 'ship', 'go', { noWorktree: true })
+    ).rejects.toThrow(/connected github identity/i);
+
+    expect(executeWorkflow).not.toHaveBeenCalled();
   });
 });
 
@@ -923,6 +1106,114 @@ describe('workflowRunCommand', () => {
     ).rejects.toThrow('--from/--from-branch has no effect with --no-worktree');
   });
 
+  // ── Folder projects ──────────────────────────────────────────────────────
+  it('registers a folder project and runs in place with --folder', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    const core = await import('@archon/core');
+    const codebaseDb = await import('@archon/core/db/codebases');
+
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'assist', description: 'Help' })],
+      errors: [],
+    });
+    // No codebase found → auto-register as folder (registerFolder mock returns cb-folder)
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce(null);
+    (codebaseDb.getCodebase as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'cb-folder',
+      name: 'platform',
+      default_cwd: '/test/path',
+      kind: 'folder',
+    });
+    const executeSpy = executeWorkflow as ReturnType<typeof mock>;
+    const registerSpy = core.registerFolder as ReturnType<typeof mock>;
+    const execBefore = executeSpy.mock.calls.length;
+    const registerBefore = registerSpy.mock.calls.length;
+    executeSpy.mockResolvedValueOnce({ success: true, workflowRunId: 'run-folder' });
+
+    const consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+    let printed = '';
+    try {
+      await workflowRunCommand('/test/path', 'assist', 'do it', { folder: true });
+      printed = consoleSpy.mock.calls.map(c => String(c[0])).join('\n');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+
+    // registerFolder was invoked for the non-git cwd
+    expect(registerSpy.mock.calls.length).toBe(registerBefore + 1);
+    // The run executed in place
+    expect(executeSpy.mock.calls.length).toBe(execBefore + 1);
+    // The in-place notice was printed
+    expect(printed).toContain('running in place');
+  });
+
+  it('rejects --branch against a registered folder project', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const codebaseDb = await import('@archon/core/db/codebases');
+
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'assist', description: 'Help' })],
+      errors: [],
+    });
+    // Registered folder project resolved by the main lookup (Once — never leak
+    // the folder kind into sibling tests via a persistent mock).
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'cb-folder',
+      name: 'platform',
+      default_cwd: '/test/path',
+      kind: 'folder',
+    });
+
+    await expect(
+      workflowRunCommand('/test/path', 'assist', 'hello', { branchName: 'feature-x' })
+    ).rejects.toThrow('Worktree options require a git-repo project');
+  });
+
+  it('rejects --folder --branch synchronously (flag-based, before any DB/registration)', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const core = await import('@archon/core');
+
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'assist', description: 'Help' })],
+      errors: [],
+    });
+    const registerSpy = core.registerFolder as ReturnType<typeof mock>;
+    const registerBefore = registerSpy.mock.calls.length;
+
+    await expect(
+      workflowRunCommand('/test/path', 'assist', 'hello', { folder: true, branchName: 'x' })
+    ).rejects.toThrow('Worktree options require a git-repo project');
+    // The flag-based guard fires before any registration work.
+    expect(registerSpy.mock.calls.length).toBe(registerBefore);
+  });
+
+  it('rejects a worktree-pinned workflow against a registered folder project', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const codebaseDb = await import('@archon/core/db/codebases');
+
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [
+        makeTestWorkflowWithSource({
+          name: 'assist',
+          description: 'Help',
+          worktree: { enabled: true },
+        }),
+      ],
+      errors: [],
+    });
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'cb-folder',
+      name: 'platform',
+      default_cwd: '/test/path',
+      kind: 'folder',
+    });
+
+    await expect(workflowRunCommand('/test/path', 'assist', 'hello', {})).rejects.toThrow(
+      'requires a worktree'
+    );
+  });
+
   it('creates worktree with auto-generated branch when no --branch given', async () => {
     const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
     const { executeWorkflow } = await import('@archon/workflows/executor');
@@ -1371,6 +1662,145 @@ describe('workflowRunCommand', () => {
     } finally {
       consoleWarnSpy.mockRestore();
     }
+  });
+
+  it('uses codebase default_branch for reuse validation instead of git auto-detection', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    const conversationDb = await import('@archon/core/db/conversations');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    const isolationDb = await import('@archon/core/db/isolation-environments');
+    const gitModule = await import('@archon/git');
+
+    const getDefaultBranchCallsBefore = (gitModule.getDefaultBranch as ReturnType<typeof mock>).mock
+      .calls.length;
+
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'assist', description: 'Help' })],
+      errors: [],
+    });
+    (conversationDb.getOrCreateConversation as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'conv-123',
+    });
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'cb-123',
+      default_cwd: '/test/path',
+      default_branch: 'develop',
+    });
+    (isolationDb.findActiveByWorkflow as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'env-1',
+      working_path: '/worktrees/feat',
+      branch_name: 'feature-old',
+      workflow_type: 'task',
+      workflow_id: 'my-feature',
+    });
+    (gitModule.isAncestorOf as ReturnType<typeof mock>).mockResolvedValueOnce(false);
+    (conversationDb.updateConversation as ReturnType<typeof mock>).mockResolvedValueOnce(undefined);
+    (executeWorkflow as ReturnType<typeof mock>).mockResolvedValueOnce({
+      success: true,
+      workflowRunId: 'run-123',
+    });
+
+    const consoleWarnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await workflowRunCommand('/test/path', 'assist', 'hello', { branchName: 'my-feature' });
+      // Warning names the codebase default branch, not the auto-detected 'dev'
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("not based on 'develop'")
+      );
+      // The stored default branch short-circuits git auto-detection entirely
+      const getDefaultBranchCallsAfter = (gitModule.getDefaultBranch as ReturnType<typeof mock>)
+        .mock.calls.length;
+      expect(getDefaultBranchCallsAfter).toBe(getDefaultBranchCallsBefore);
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('threads codebase default_branch into provider.create and executeWorkflow opts', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    const conversationDb = await import('@archon/core/db/conversations');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    const isolation = await import('@archon/isolation');
+
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'assist', description: 'Help' })],
+      errors: [],
+    });
+    (conversationDb.getOrCreateConversation as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'conv-123',
+    });
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'cb-123',
+      default_cwd: '/test/path',
+      default_branch: 'develop',
+    });
+    (conversationDb.updateConversation as ReturnType<typeof mock>).mockResolvedValueOnce(undefined);
+    (executeWorkflow as ReturnType<typeof mock>).mockResolvedValueOnce({
+      success: true,
+      workflowRunId: 'run-123',
+    });
+
+    // No branchName, no noWorktree — auto-isolates via provider.create
+    await workflowRunCommand('/test/path', 'assist', 'hello', {});
+
+    const getIsolationProviderMock = isolation.getIsolationProvider as ReturnType<typeof mock>;
+    const provider = getIsolationProviderMock.mock.results.at(-1)?.value as
+      | { create: ReturnType<typeof mock> }
+      | undefined;
+    const lastCreateCall = provider?.create.mock.calls.at(-1)?.[0] as {
+      baseBranch?: string;
+    };
+    expect(lastCreateCall.baseBranch).toBe('develop');
+
+    // executeWorkflow opts (trailing arg) carry the same fallback for $BASE_BRANCH
+    const executeSpy = executeWorkflow as ReturnType<typeof mock>;
+    const lastExecuteArgs = executeSpy.mock.calls.at(-1) as unknown[];
+    const opts = lastExecuteArgs[lastExecuteArgs.length - 1] as { baseBranch?: string };
+    expect(opts.baseBranch).toBe('develop');
+  });
+
+  it('omits baseBranch when the codebase has no stored default_branch', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const { executeWorkflow } = await import('@archon/workflows/executor');
+    const conversationDb = await import('@archon/core/db/conversations');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    const isolation = await import('@archon/isolation');
+
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'assist', description: 'Help' })],
+      errors: [],
+    });
+    (conversationDb.getOrCreateConversation as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'conv-123',
+    });
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'cb-123',
+      default_cwd: '/test/path',
+      default_branch: null,
+    });
+    (conversationDb.updateConversation as ReturnType<typeof mock>).mockResolvedValueOnce(undefined);
+    (executeWorkflow as ReturnType<typeof mock>).mockResolvedValueOnce({
+      success: true,
+      workflowRunId: 'run-123',
+    });
+
+    await workflowRunCommand('/test/path', 'assist', 'hello', {});
+
+    const getIsolationProviderMock = isolation.getIsolationProvider as ReturnType<typeof mock>;
+    const provider = getIsolationProviderMock.mock.results.at(-1)?.value as
+      | { create: ReturnType<typeof mock> }
+      | undefined;
+    const lastCreateCall = provider?.create.mock.calls.at(-1)?.[0] as {
+      baseBranch?: string;
+    };
+    expect(lastCreateCall.baseBranch).toBeUndefined();
+
+    const executeSpy = executeWorkflow as ReturnType<typeof mock>;
+    const lastExecuteArgs = executeSpy.mock.calls.at(-1) as unknown[];
+    const opts = lastExecuteArgs[lastExecuteArgs.length - 1] as { baseBranch?: string };
+    expect(opts.baseBranch).toBeUndefined();
   });
 
   it('sends dispatch message before executeWorkflow with correct metadata', async () => {
@@ -1946,6 +2376,261 @@ describe('workflowGetCommand', () => {
   });
 });
 
+describe('run-id prefix resolution (short ids from `workflow runs`)', () => {
+  const FULL_ID = '0b1ee8da-1111-2222-3333-444455556666';
+  const CODEBASE = { id: 'cb-1', name: 'proj', default_cwd: '/repo' };
+  let consoleSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(async () => {
+    consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockClear();
+    (workflowDb.findWorkflowRunsByIdPrefix as ReturnType<typeof mock>).mockClear();
+    (workflowDb.getWorkflowRun as ReturnType<typeof mock>).mockClear();
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it('resolves a unique short prefix to the full run id (get)', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce(
+      CODEBASE
+    );
+    (workflowDb.findWorkflowRunsByIdPrefix as ReturnType<typeof mock>).mockResolvedValueOnce([
+      { id: FULL_ID },
+    ]);
+    (workflowDb.getWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: FULL_ID,
+      workflow_name: 'implement',
+      status: 'completed',
+      working_path: '/tmp/wt',
+      started_at: new Date(),
+      metadata: {},
+    });
+
+    const code = await workflowGetCommand('0b1ee8da', true, undefined, '/repo');
+
+    expect(workflowDb.findWorkflowRunsByIdPrefix).toHaveBeenCalledWith('0b1ee8da', 'cb-1');
+    expect(workflowDb.getWorkflowRun).toHaveBeenCalledWith(FULL_ID);
+    expect(code).toBe(0);
+  });
+
+  it('skips codebase and prefix lookups entirely for a full UUID', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (workflowDb.getWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: FULL_ID,
+      workflow_name: 'implement',
+      status: 'completed',
+      working_path: '/tmp/wt',
+      started_at: new Date(),
+      metadata: {},
+    });
+
+    const code = await workflowGetCommand(FULL_ID, true, undefined, '/repo');
+
+    expect(codebaseDb.findCodebaseByDefaultCwd).not.toHaveBeenCalled();
+    expect(workflowDb.findWorkflowRunsByIdPrefix).not.toHaveBeenCalled();
+    expect(workflowDb.getWorkflowRun).toHaveBeenCalledWith(FULL_ID);
+    expect(code).toBe(0);
+  });
+
+  it('skips lookups for a 32-char undashed full id (SQLite id shape)', async () => {
+    const undashedId = 'e1f890f05e5bab0d906921593bf500c4';
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (workflowDb.getWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: undashedId,
+      workflow_name: 'implement',
+      status: 'completed',
+      working_path: '/tmp/wt',
+      started_at: new Date(),
+      metadata: {},
+    });
+
+    const code = await workflowGetCommand(undashedId, true, undefined, '/repo');
+
+    expect(codebaseDb.findCodebaseByDefaultCwd).not.toHaveBeenCalled();
+    expect(workflowDb.findWorkflowRunsByIdPrefix).not.toHaveBeenCalled();
+    expect(workflowDb.getWorkflowRun).toHaveBeenCalledWith(undashedId);
+    expect(code).toBe(0);
+  });
+
+  it('throws on an ambiguous prefix (human mode)', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce(
+      CODEBASE
+    );
+    (workflowDb.findWorkflowRunsByIdPrefix as ReturnType<typeof mock>).mockResolvedValueOnce([
+      { id: '0b1ee8da-1111-2222-3333-444455556666' },
+      { id: '0b1ee8da-9999-8888-7777-666655554444' },
+    ]);
+
+    await expect(workflowResumeCommand('0b1ee8da', undefined, '/repo')).rejects.toThrow(
+      'matches more than one run'
+    );
+  });
+
+  it('emits {ok:false} JSON on an ambiguous prefix (never throws in --json)', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce(
+      CODEBASE
+    );
+    (workflowDb.findWorkflowRunsByIdPrefix as ReturnType<typeof mock>).mockResolvedValueOnce([
+      { id: '0b1ee8da-1111-2222-3333-444455556666' },
+      { id: '0b1ee8da-9999-8888-7777-666655554444' },
+    ]);
+
+    await workflowAbandonCommand('0b1ee8da', true, '/repo');
+
+    const parsed = JSON.parse(consoleSpy.mock.calls[0][0] as string) as {
+      ok: boolean;
+      runId: string;
+      action: string;
+      error: string;
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.runId).toBe('0b1ee8da');
+    expect(parsed.action).toBe('abandon');
+    expect(parsed.error).toContain('matches more than one run');
+  });
+
+  it('passes the id through unchanged when cwd is not a registered project', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce(null);
+    (workflowDb.getWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce(null);
+
+    const code = await workflowGetCommand('deadbeef', true, undefined, '/somewhere');
+
+    expect(workflowDb.findWorkflowRunsByIdPrefix).not.toHaveBeenCalled();
+    expect(workflowDb.getWorkflowRun).toHaveBeenCalledWith('deadbeef');
+    expect(code).toBe(1);
+  });
+
+  it('passes the id through when the prefix matches nothing in this project', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce(
+      CODEBASE
+    );
+    (workflowDb.findWorkflowRunsByIdPrefix as ReturnType<typeof mock>).mockResolvedValueOnce([]);
+    (workflowDb.getWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce(null);
+
+    const code = await workflowGetCommand('deadbeef', true, undefined, '/repo');
+
+    expect(workflowDb.getWorkflowRun).toHaveBeenCalledWith('deadbeef');
+    expect(code).toBe(1);
+  });
+
+  it('abandons by short prefix and reports the resolved full id', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce(
+      CODEBASE
+    );
+    (workflowDb.findWorkflowRunsByIdPrefix as ReturnType<typeof mock>).mockResolvedValueOnce([
+      { id: FULL_ID },
+    ]);
+    (workflowDb.getWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: FULL_ID,
+      workflow_name: 'implement',
+      status: 'running',
+    });
+    (workflowDb.cancelWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce(undefined);
+
+    await workflowAbandonCommand('0b1ee8da', true, '/repo');
+
+    expect(workflowDb.cancelWorkflowRun).toHaveBeenCalledWith(FULL_ID);
+    const parsed = JSON.parse(consoleSpy.mock.calls[0][0] as string) as {
+      ok: boolean;
+      runId: string;
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.runId).toBe(FULL_ID);
+  });
+
+  it('approves by short prefix and reports the resolved full id', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce(
+      CODEBASE
+    );
+    (workflowDb.findWorkflowRunsByIdPrefix as ReturnType<typeof mock>).mockResolvedValueOnce([
+      { id: FULL_ID },
+    ]);
+    (workflowDb.getWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: FULL_ID,
+      workflow_name: 'implement',
+      status: 'paused',
+      working_path: '/tmp/wt',
+      codebase_id: 'cb',
+      conversation_id: 'conv',
+      user_message: 'go',
+      metadata: { approval: { nodeId: 'gate', message: 'ok?' } },
+    });
+
+    await workflowApproveCommand('0b1ee8da', 'lgtm', true, '/repo');
+
+    expect(workflowDb.getWorkflowRun).toHaveBeenCalledWith(FULL_ID);
+    const parsed = JSON.parse(consoleSpy.mock.calls[0][0] as string) as Record<string, unknown>;
+    expect(parsed).toMatchObject({ ok: true, runId: FULL_ID, action: 'approve' });
+  });
+
+  it('rejects by short prefix and reports the resolved full id', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce(
+      CODEBASE
+    );
+    (workflowDb.findWorkflowRunsByIdPrefix as ReturnType<typeof mock>).mockResolvedValueOnce([
+      { id: FULL_ID },
+    ]);
+    (workflowDb.getWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: FULL_ID,
+      workflow_name: 'implement',
+      status: 'paused',
+      working_path: '/tmp/wt',
+      codebase_id: 'cb',
+      conversation_id: 'conv',
+      user_message: 'go',
+      metadata: { approval: { nodeId: 'gate', message: 'ok?' } },
+    });
+    (workflowDb.cancelWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce({
+      cancelled: true,
+    });
+
+    await workflowRejectCommand('0b1ee8da', 'nope', true, '/repo');
+
+    expect(workflowDb.getWorkflowRun).toHaveBeenCalledWith(FULL_ID);
+    const parsed = JSON.parse(consoleSpy.mock.calls[0][0] as string) as Record<string, unknown>;
+    expect(parsed).toMatchObject({
+      ok: true,
+      runId: FULL_ID,
+      action: 'reject',
+      cancelled: true,
+    });
+  });
+
+  it('skips resolution when no cwd is provided (exact lookup only)', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (workflowDb.getWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce(null);
+
+    const code = await workflowGetCommand('deadbeef', true);
+
+    expect(codebaseDb.findCodebaseByDefaultCwd).not.toHaveBeenCalled();
+    expect(workflowDb.findWorkflowRunsByIdPrefix).not.toHaveBeenCalled();
+    expect(code).toBe(1);
+  });
+});
+
 describe('workflowRunsCommand', () => {
   let consoleSpy: ReturnType<typeof spyOn>;
 
@@ -2244,6 +2929,7 @@ describe('workflowRunCommand — detach', () => {
 
     const execBefore = (executeWorkflow as ReturnType<typeof mock>).mock.calls.length;
     const spawnSpy = spyOn(Bun, 'spawn').mockReturnValue({
+      pid: 12345,
       unref: mock(() => undefined),
     } as unknown as ReturnType<typeof Bun.spawn>);
     const savedArgv = process.argv;
@@ -2252,11 +2938,15 @@ describe('workflowRunCommand — detach', () => {
     // Capture call data BEFORE mockRestore() — restoring a spy clears its recorded calls.
     let spawnCallCount = 0;
     let spawnCmd: string[] = [];
-    let spawnOptions: { cwd: string; cmd: string[] } | undefined;
+    let spawnOptions:
+      | { cwd: string; cmd: string[]; detached?: boolean; windowsHide?: boolean }
+      | undefined;
     try {
       await workflowRunCommand('/test/path', 'assist', 'hello', { detach: true });
       spawnCallCount = spawnSpy.mock.calls.length;
-      spawnOptions = spawnSpy.mock.calls[0]?.[0] as { cwd: string; cmd: string[] } | undefined;
+      spawnOptions = spawnSpy.mock.calls[0]?.[0] as
+        | { cwd: string; cmd: string[]; detached?: boolean; windowsHide?: boolean }
+        | undefined;
       spawnCmd = (spawnOptions?.cmd ?? []).slice();
     } finally {
       process.argv = savedArgv;
@@ -2264,6 +2954,10 @@ describe('workflowRunCommand — detach', () => {
     }
 
     expect(spawnCallCount).toBe(1);
+    // The actual Windows fix: the child must be spawned into its own process
+    // group, or the launching shell's teardown kills it (~1s in).
+    expect(spawnOptions?.detached).toBe(true);
+    expect(spawnOptions?.windowsHide).toBe(true);
     expect(spawnCmd).not.toContain('--detach');
     expect(spawnCmd).toContain('--branch');
     expect(spawnCmd).toContain('--conversation-id');
@@ -2280,6 +2974,48 @@ describe('workflowRunCommand — detach', () => {
     expect(consoleSpy).toHaveBeenCalledWith("Started 'assist' in the background.");
   });
 
+  it('does NOT pin a --branch on the detached child for a registered folder project', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const paths = await import('@archon/paths');
+    const codebaseDb = await import('@archon/core/db/codebases');
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'assist', description: 'Help' })],
+      errors: [],
+    });
+    (paths.getArchonHome as ReturnType<typeof mock>).mockImplementationOnce(() => {
+      throw new Error('no home in test');
+    });
+    // Detach folder probe: exact miss, then path-prefix resolves a folder project.
+    (codebaseDb.findCodebaseByDefaultCwd as ReturnType<typeof mock>).mockResolvedValueOnce(null);
+    (codebaseDb.findCodebaseByPathPrefix as ReturnType<typeof mock>).mockResolvedValueOnce({
+      id: 'cb-folder',
+      name: 'platform',
+      default_cwd: '/test/path',
+      kind: 'folder',
+    });
+
+    const spawnSpy = spyOn(Bun, 'spawn').mockReturnValue({
+      pid: 12345,
+      unref: mock(() => undefined),
+    } as unknown as ReturnType<typeof Bun.spawn>);
+    const savedArgv = process.argv;
+    process.argv = ['bun', '/abs/cli.ts', 'workflow', 'run', 'assist', 'hello', '--detach'];
+    let spawnCmd: string[] = [];
+    try {
+      await workflowRunCommand('/test/path', 'assist', 'hello', { detach: true });
+      spawnCmd = (
+        (spawnSpy.mock.calls[0]?.[0] as { cmd: string[] } | undefined)?.cmd ?? []
+      ).slice();
+    } finally {
+      process.argv = savedArgv;
+      spawnSpy.mockRestore();
+    }
+
+    expect(spawnCmd).not.toContain('--detach');
+    expect(spawnCmd).not.toContain('--branch'); // folder project → no worktree branch
+    expect(spawnCmd).toContain('--conversation-id');
+  });
+
   it('--detach --json emits a structured ack', async () => {
     const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
     const paths = await import('@archon/paths');
@@ -2291,6 +3027,7 @@ describe('workflowRunCommand — detach', () => {
       throw new Error('no home in test');
     });
     const spawnSpy = spyOn(Bun, 'spawn').mockReturnValue({
+      pid: 12345,
       unref: mock(() => undefined),
     } as unknown as ReturnType<typeof Bun.spawn>);
     const savedArgv = process.argv;
@@ -2315,6 +3052,38 @@ describe('workflowRunCommand — detach', () => {
     const parsed = JSON.parse(consoleSpy.mock.calls[0][0] as string) as Record<string, unknown>;
     expect(parsed).toMatchObject({ ok: true, action: 'run', detached: true, workflow: 'assist' });
     expect(typeof parsed.conversationId).toBe('string');
+  });
+
+  it('throws (no false success ack) when the detached child fails to spawn', async () => {
+    const { discoverWorkflowsWithConfig } = await import('@archon/workflows/workflow-discovery');
+    const paths = await import('@archon/paths');
+    (discoverWorkflowsWithConfig as ReturnType<typeof mock>).mockResolvedValueOnce({
+      workflows: [makeTestWorkflowWithSource({ name: 'assist', description: 'Help' })],
+      errors: [],
+    });
+    (paths.getArchonHome as ReturnType<typeof mock>).mockImplementationOnce(() => {
+      throw new Error('no home in test');
+    });
+    // Node's spawn does not throw synchronously on a bad executable — the only
+    // synchronous failure signal is an undefined pid.
+    const spawnSpy = spyOn(Bun, 'spawn').mockReturnValue({
+      pid: undefined,
+      unref: mock(() => undefined),
+    } as unknown as ReturnType<typeof Bun.spawn>);
+    const savedArgv = process.argv;
+    process.argv = ['bun', '/abs/cli.ts', 'workflow', 'run', 'assist', 'hello', '--detach'];
+
+    try {
+      await expect(
+        workflowRunCommand('/test/path', 'assist', 'hello', { detach: true })
+      ).rejects.toThrow(/Failed to start detached workflow child/);
+    } finally {
+      process.argv = savedArgv;
+      spawnSpy.mockRestore();
+    }
+    // The success ack must never have been printed.
+    const logged = consoleSpy.mock.calls.map(call => String(call[0]));
+    expect(logged).not.toContain("Started 'assist' in the background.");
   });
 });
 
@@ -3014,9 +3783,20 @@ describe('workflowRejectCommand', () => {
       // downstream workflowRunCommand failure is acceptable in this unit test
     }
 
+    // Stays 'paused' (no status write) — rework staged on the approval context (#2075)
     expect(workflowDb.updateWorkflowRun).toHaveBeenCalledWith('run-on-reject', {
-      status: 'failed',
-      metadata: { rejection_reason: 'needs work', rejection_count: 1 },
+      metadata: {
+        approval: {
+          type: 'approval',
+          nodeId: 'gate',
+          message: 'Approve?',
+          onRejectPrompt: 'Fix: $REJECTION_REASON',
+          onRejectMaxAttempts: 3,
+          resolved: 'rejected',
+        },
+        rejection_reason: 'needs work',
+        rejection_count: 1,
+      },
     });
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Rejected workflow'));
   });
