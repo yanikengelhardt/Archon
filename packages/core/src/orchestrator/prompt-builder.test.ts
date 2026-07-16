@@ -138,6 +138,43 @@ describe('buildOrchestratorSystemAppend', () => {
     expect(result).toContain('## Registered Projects');
   });
 
+  test('includeWorkflows=false omits catalog, routing rules, and invocation syntax (scoped)', () => {
+    const result = buildOrchestratorSystemAppend(
+      makeConversation('cb-1'),
+      codebases,
+      workflows,
+      false
+    );
+    expect(result).not.toContain('## Available Workflows');
+    expect(result).not.toContain('## Routing Rules');
+    expect(result).not.toContain('/invoke-workflow');
+    expect(result).not.toContain('invoke that workflow instead of running the script directly');
+    expect(result).not.toContain('workflow invocations');
+    // Project setup and execution basics stay
+    expect(result).toContain('## Project Setup');
+    expect(result).toContain('## Active Project');
+    expect(result).toContain('## Project Execution Rules');
+  });
+
+  test('includeWorkflows=false omits catalog and invocation syntax (unscoped)', () => {
+    const result = buildOrchestratorSystemAppend(
+      makeConversation(null),
+      codebases,
+      workflows,
+      false
+    );
+    expect(result).not.toContain('## Available Workflows');
+    expect(result).not.toContain('/invoke-workflow');
+    expect(result).toContain('## Registered Projects');
+    expect(result).toContain('## Project Setup');
+  });
+
+  test('includeWorkflows defaults to true (catalog + invocation syntax present)', () => {
+    const result = buildOrchestratorSystemAppend(makeConversation('cb-1'), codebases, workflows);
+    expect(result).toContain('## Available Workflows');
+    expect(result).toContain('/invoke-workflow');
+  });
+
   test('does NOT include the run-management section (orchestrator gates it per-provider)', () => {
     // The CLI run-management pointer is appended by orchestrator-agent.ts only for
     // project-scoped chats on providers WITHOUT the native manage_run tool — never

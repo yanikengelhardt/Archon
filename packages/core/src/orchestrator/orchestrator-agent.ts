@@ -1693,9 +1693,22 @@ export async function handleMessage(
       }
     }
 
+    // chat.workflowInvocation: false makes direct chat workflow-free — the
+    // system prompt omits the catalog/routing rules, /invoke-workflow in
+    // responses can never resolve (empty list), and manage_run / the CLI
+    // run-management section are not injected. Users' deterministic slash
+    // commands are unaffected (handled before this point).
+    const allowWorkflowInvocation = config.chat?.workflowInvocation ?? true;
+    const invocableWorkflows = allowWorkflowInvocation ? workflows : [];
+
     // Claude supports the preset object for prompt caching; other providers
     // need a plain string (Pi coerces non-string to undefined, Codex ignores it).
-    let systemAppend = buildOrchestratorSystemAppend(conversation, codebases, workflows);
+    let systemAppend = buildOrchestratorSystemAppend(
+      conversation,
+      codebases,
+      workflows,
+      allowWorkflowInvocation
+    );
     // Capabilities are only consulted for project-scoped chats (both the native tool
     // and the CLI pointer are scoped features), so look them up lazily — this also
     // avoids a registry lookup (and a throw for an unregistered provider) on the
@@ -1708,7 +1721,7 @@ export async function handleMessage(
     // — adding the CLI pointer there would be redundant and steer them onto a bash path
     // that needs `archon` on PATH. Project-scoped only: the CLI commands require a
     // git-repo cwd, which unscoped chats (cwd ~/.archon/workspaces) don't have.
-    if (scopedCaps !== null && !scopedCaps.nativeTools) {
+    if (scopedCaps !== null && !scopedCaps.nativeTools && allowWorkflowInvocation) {
       systemAppend += `\n\n${buildRunManagementSection()}`;
     }
     const systemPrompt =
@@ -1768,7 +1781,7 @@ export async function handleMessage(
     // the provider supports in-process native tools (Claude, Pi). The explicit
     // codebase_id check (redundant with scopedCaps !== null) narrows it to string
     // for the block below.
-    if (conversation.codebase_id !== null && scopedCaps?.nativeTools) {
+    if (conversation.codebase_id !== null && scopedCaps?.nativeTools && allowWorkflowInvocation) {
       const scopedCodebaseId = conversation.codebase_id;
       requestOptions.nativeTools = [
         buildManageRunTool({
@@ -1819,7 +1832,7 @@ export async function handleMessage(
         conversationId,
         message,
         codebases,
-        workflows,
+        invocableWorkflows,
         aiClient,
         fullPrompt,
         cwd,
@@ -1836,7 +1849,7 @@ export async function handleMessage(
         conversationId,
         message,
         codebases,
-        workflows,
+        invocableWorkflows,
         aiClient,
         fullPrompt,
         cwd,

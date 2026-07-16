@@ -386,6 +386,9 @@ function getDefaults(): MergedConfig {
       loadDefaultCommands: true,
       loadDefaultWorkflows: true,
     },
+    chat: {
+      workflowInvocation: true,
+    },
   };
 }
 
@@ -515,6 +518,11 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
     result.routing = global.routing;
   }
 
+  // Chat behavior
+  if (global.chat?.workflowInvocation !== undefined) {
+    result.chat = { ...result.chat, workflowInvocation: global.chat.workflowInvocation };
+  }
+
   return result;
 }
 
@@ -582,6 +590,11 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
   // Propagate per-project env vars from repo config
   if (repo.env) {
     result.envVars = { ...result.envVars, ...repo.env };
+  }
+
+  // Chat behavior (repo overrides global)
+  if (repo.chat?.workflowInvocation !== undefined) {
+    result.chat = { ...result.chat, workflowInvocation: repo.chat.workflowInvocation };
   }
 
   return result;

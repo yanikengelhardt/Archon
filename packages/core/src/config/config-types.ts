@@ -134,6 +134,11 @@ export interface GlobalConfig {
   routing?: RoutingConfig;
 
   /**
+   * Direct-chat behavior (workflow invocation from chat, …)
+   */
+  chat?: ChatConfig;
+
+  /**
    * Concurrency limits
    */
   concurrency?: {
@@ -256,6 +261,11 @@ export interface RepoConfig {
   env?: Record<string, string>;
 
   /**
+   * Direct-chat behavior for this repository. Overrides global `chat`.
+   */
+  chat?: ChatConfig;
+
+  /**
    * Repo-owner-curated list of recommended workflow names, in display order.
    * Pinned on top of both the Workflows page and the sidebar run dropdown
    * under a "Recommended for this project" header. Names not matching any
@@ -289,6 +299,18 @@ export interface RepoConfig {
      */
     loadDefaultWorkflows?: boolean;
   };
+}
+
+export interface ChatConfig {
+  /**
+   * Whether direct chat may start workflows. When false, the chat system
+   * prompt omits the workflow catalog and routing rules, `/invoke-workflow`
+   * emitted by the model is ignored, and the `manage_run` tool / run-management
+   * CLI section are not injected. Deterministic slash commands typed by users
+   * (`/workflow run …`) keep working. Repo config overrides global.
+   * @default true
+   */
+  workflowInvocation?: boolean;
 }
 
 export interface CodebaseRoutingEntry {
@@ -372,6 +394,15 @@ export interface MergedConfig {
    * Evaluated when a new conversation has no codebase attached.
    */
   routing?: RoutingConfig;
+
+  /**
+   * Direct-chat behavior (repo > global). See ChatConfig. The loader always
+   * sets it; optional so hand-built partial configs (tests, embedders) keep
+   * working — readers default `workflowInvocation` to true.
+   */
+  chat?: {
+    workflowInvocation: boolean;
+  };
 }
 
 /**

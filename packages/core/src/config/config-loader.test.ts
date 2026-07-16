@@ -282,6 +282,42 @@ recommendedWorkflows: "archon-plan"
       expect(config.concurrency.maxConversations).toBe(10);
     });
 
+    test('chat.workflowInvocation defaults to true', async () => {
+      const error = new Error('ENOENT') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      mockFsReadFile.mockRejectedValue(error);
+
+      const config = await loadConfig();
+      expect(config.chat.workflowInvocation).toBe(true);
+    });
+
+    test('chat.workflowInvocation: false in global config is applied', async () => {
+      mockFsReadFile.mockResolvedValue('chat:\n  workflowInvocation: false\n');
+
+      const config = await loadConfig();
+      expect(config.chat.workflowInvocation).toBe(false);
+    });
+
+    test('repo chat.workflowInvocation overrides global', async () => {
+      const pathMatches = (path: string, pattern: string): boolean =>
+        path.replace(/\\/g, '/').includes(pattern);
+
+      mockFsReadFile.mockImplementation(async (path: string) => {
+        if (pathMatches(path, '/repo/.archon/config.yaml')) {
+          return 'chat:\n  workflowInvocation: false\n';
+        }
+        if (pathMatches(path, '.archon/config.yaml')) {
+          return ''; // global config silent on chat
+        }
+        const error = new Error('ENOENT') as NodeJS.ErrnoException;
+        error.code = 'ENOENT';
+        throw error;
+      });
+
+      const config = await loadConfig('/test/repo');
+      expect(config.chat.workflowInvocation).toBe(false);
+    });
+
     test('env var DEFAULT_AI_ASSISTANT is a fallback — config file assistant wins', async () => {
       mockFsReadFile.mockResolvedValue(`
 defaultAssistant: claude

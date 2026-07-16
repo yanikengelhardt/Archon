@@ -820,3 +820,126 @@ describe('streaming tail completion', () => {
     expect((resultChunk as Record<string, unknown>)?.structuredOutput).toEqual({ partial: true });
   });
 });
+
+// ─── delta coalescing ─────────────────────────────────────────────────────────
+
+describe('assistant delta coalescing', () => {
+  const usage = { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } };
+
+  function makeTextDeltaEvent(delta: string): AgentSessionEvent {
+    return {
+      type: 'message_update',
+      message: { role: 'assistant' },
+      assistantMessageEvent: {
+        type: 'text_delta',
+        contentIndex: 0,
+        delta,
+        partial: { role: 'assistant' },
+      },
+    } as unknown as AgentSessionEvent;
+  }
+
+  function makeMessageEndEvent(): AgentSessionEvent {
+    return { type: 'message_end', message: { role: 'assistant' } } as unknown as AgentSessionEvent;
+  }
+
+  function makeAgentEndEvent(fullText: string): AgentSessionEvent {
+    return {
+      type: 'agent_end',
+      messages: [
+        {
+          role: 'assistant',
+          usage,
+          stopReason: 'stop',
+          content: [{ type: 'text', text: fullText }],
+        },
+      ],
+    } as unknown as AgentSessionEvent;
+  }
+
+  function makeSession(script: (emit: (event: AgentSessionEvent) => void) => void): AgentSession {
+    let listener: ((event: AgentSessionEvent) => void) | undefined;
+    return {
+      sessionId: 'session-1',
+      subscribe: (fn: (event: AgentSessionEvent) => void) => {
+        listener = fn;
+        return () => {};
+      },
+      prompt: async () => {
+        script(event => listener?.(event));
+      },
+      abort: async () => {},
+      dispose: () => {},
+    } as unknown as AgentSession;
+  }
+
+  test('token-sized deltas coalesce into one assistant chunk per message', async () => {
+    const session = makeSession(emit => {
+      emit({ type: 'turn_start' } as AgentSessionEvent);
+      emit(makeTextDeltaEvent('Fin'));
+      emit(makeTextDeltaEvent('anztip'));
+      emit(makeTextDeltaEvent('-Reporting'));
+      emit(makeMessageEndEvent());
+      emit(makeAgentEndEvent('Finanztip-Reporting'));
+    });
+
+    const chunks: MessageChunk[] = [];
+    for await (const chunk of bridgeSession(session, 'prompt')) {
+      chunks.push(chunk);
+    }
+
+    const assistantChunks = chunks.filter(c => c.type === 'assistant');
+    expect(assistantChunks).toHaveLength(1);
+    expect(assistantChunks[0].content).toBe('Finanztip-Reporting');
+  });
+
+  test('buffered text flushes before a tool chunk so ordering is preserved', async () => {
+    const session = makeSession(emit => {
+      emit({ type: 'turn_start' } as AgentSessionEvent);
+      emit(makeTextDeltaEvent('Let me '));
+      emit(makeTextDeltaEvent('check.'));
+      emit({
+        type: 'tool_execution_start',
+        toolCallId: 'tc-1',
+        toolName: 'read',
+        args: { path: 'x.md' },
+      } as unknown as AgentSessionEvent);
+      emit(makeMessageEndEvent());
+      emit(makeAgentEndEvent('Let me check.'));
+    });
+
+    const chunks: MessageChunk[] = [];
+    for await (const chunk of bridgeSession(session, 'prompt')) {
+      chunks.push(chunk);
+    }
+
+    const assistantIdx = chunks.findIndex(c => c.type === 'assistant');
+    const toolIdx = chunks.findIndex(c => c.type === 'tool');
+    expect(chunks[assistantIdx]?.type === 'assistant' && chunks[assistantIdx].content).toBe(
+      'Let me check.'
+    );
+    expect(toolIdx).toBeGreaterThan(assistantIdx);
+  });
+
+  test('two messages separated by message_end yield two assistant chunks', async () => {
+    const session = makeSession(emit => {
+      emit({ type: 'turn_start' } as AgentSessionEvent);
+      emit(makeTextDeltaEvent('first message'));
+      emit(makeMessageEndEvent());
+      emit({ type: 'turn_start' } as AgentSessionEvent);
+      emit(makeTextDeltaEvent('second message'));
+      emit(makeMessageEndEvent());
+      emit(makeAgentEndEvent('second message'));
+    });
+
+    const chunks: MessageChunk[] = [];
+    for await (const chunk of bridgeSession(session, 'prompt')) {
+      chunks.push(chunk);
+    }
+
+    const assistantChunks = chunks.filter(c => c.type === 'assistant');
+    expect(assistantChunks).toHaveLength(2);
+    expect(assistantChunks[0].content).toBe('first message');
+    expect(assistantChunks[1].content).toBe('second message');
+  });
+});

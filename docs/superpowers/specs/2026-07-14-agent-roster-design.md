@@ -20,9 +20,14 @@ with Archon as the harness. The program is decomposed into four specs:
 ## Decisions made during brainstorming
 
 1. Roster first, workflows second — no workflow wiring in this spec.
-2. **Pi is the single AI backend** for all roster agents; Archon is the harness
-   (orchestration, isolation, approval gates, audit). Chosen over Archon-native
-   multi-provider aliases and over per-harness native agent definitions.
+2. **Pi is the AI backend** for the chore lane (`ft/coder`); Archon is the harness
+   (orchestration, isolation, approval gates, audit). `@fable`/`@opus` run on the
+   native `claude` provider (Claude models are not usable through Pi on this machine).
+   **Amended during implementation:** `@sol`/`@terra`/`@luna-low` run on the native
+   `codex` provider — Archon embeds the Pi SDK as an in-process library (pinned
+   `^0.79.1`), NOT the installed `pi` CLI (0.80.6), and 0.79.x has no `openai-codex`
+   backend. Revisit Pi-managed codex lanes when Archon's Pi SDK reaches ≥0.80.
+   Bonus: alias-level `effort` routes correctly for the codex provider.
 3. Feasibility verified on this machine (pi 0.80.6): `anthropic/claude-fable-5`,
    `anthropic/claude-opus-4-8`, `openai-codex/gpt-5.6-{sol,terra,luna}` (rides the
    Codex subscription via Pi's `openai-codex` backend), and `ft/coder` (Finanztip-hosted
@@ -64,26 +69,33 @@ The `pi` TUI keeps working unchanged.
 ```
 ~/.archon/config.yaml            # + aliases: and tiers: blocks
 ~/.archon/commands/agent-*.md    # 9 persona files
-~/.archon/workflows/agent-roster-smoke.yaml   # one-time smoke test
+seo-research/.archon/workflows/agent-roster-smoke.yaml   # one-time smoke test
 ```
 
-Project repos stay untouched.
+Project repos stay untouched — with one discovered exception: **home-scoped
+(global) workflows reject `@custom` aliases** (Archon portability rule: global
+workflows may only use `small`/`medium`/`large` tiers or literal model strings).
+The smoke test therefore lives in seo-research (which already had
+`.archon/workflows/`). Consequence for spec A: factory workflows either live in
+a project `.archon/workflows/` (full `@alias` access) or, if home-scoped, use
+tier keywords — which is why the tiers above mirror the alias lanes.
 
 ## Model shortcuts (`~/.archon/config.yaml`)
 
 ```yaml
-aliases:
-  "@fable":    { provider: pi, model: anthropic/claude-fable-5 }                  # orchestrator
-  "@sol":      { provider: pi, model: openai-codex/gpt-5.6-sol, effort: high }    # orchestrator
-  "@opus":     { provider: pi, model: anthropic/claude-opus-4-8 }                 # orchestrator
-  "@terra":    { provider: pi, model: openai-codex/gpt-5.6-terra, effort: high }  # all teamleads
-  "@luna-low": { provider: pi, model: openai-codex/gpt-5.6-luna, effort: low }    # all specialists
-  "@chore":    { provider: pi, model: ft/coder }                                  # chore lane
+aliases:   # AS IMPLEMENTED (verified refs)
+  "@fable":    { provider: claude, model: claude-fable-5 }           # orchestrator — verified live ("OK fable")
+  "@sol":      { provider: codex, model: gpt-5.6-sol, effort: high } # orchestrator
+  "@opus":     { provider: claude, model: claude-opus-4-8 }          # orchestrator
+  "@terra":    { provider: codex, model: gpt-5.6-terra, effort: high }  # all teamleads
+  "@luna-low": { provider: codex, model: gpt-5.6-luna, effort: low }    # all specialists
+  "@chore":    { provider: pi, model: ft/coder }                     # chore lane (endpoint is VPN-only)
 
-tiers:   # optional: tier keywords resolve to the same lanes
+tiers:   # tier keywords resolve to the same lanes; ALSO the only model refs
+         # allowed in home-scoped workflows (see constraint below)
   small:  { provider: pi, model: ft/coder }
-  medium: { provider: pi, model: openai-codex/gpt-5.6-luna }
-  large:  { provider: pi, model: openai-codex/gpt-5.6-terra, effort: high }
+  medium: { provider: codex, model: gpt-5.6-luna }
+  large:  { provider: codex, model: gpt-5.6-terra, effort: high }
 ```
 
 Implementation caveats to verify:
@@ -93,6 +105,8 @@ Implementation caveats to verify:
   (`thinking:`/`effort:`) and the alias carries model only.
 - `ft/coder` has `supportsReasoningEffort: false` in `models.json` — `@chore`
   must never carry an effort setting.
+- Exact claude model ref strings for `@fable`/`@opus` (`fable-5` vs `claude-fable-5`,
+  `opus-4-8` vs `claude-opus-4-8`) — verify what Archon's claude provider accepts.
 
 ## Personas (`~/.archon/commands/`)
 
@@ -182,6 +196,31 @@ Chat/CLI: `@aliases` work anywhere a model can be set; personas are invocable as
 - Fail-fast stance: a typo'd alias fails at workflow load; no silent fallback to a
   default model.
 
+## Addendum (2026-07-15): personas moved to Pi-native home
+
+Course correction after re-scoping the program: **ad-hoc daily work happens in
+Herdr + Pi directly; Archon is only for deterministic, unattended pipelines.**
+Consequences, implemented same day:
+
+- **Personas now live in `~/.pi/agent/personas/agent-*.md`** (migrated 1:1 from
+  `~/.archon/commands/`, minus the Archon `$ARGUMENTS` footer). Global — zero
+  per-repo maintenance; repo rules still come from each repo's AGENTS.md, which
+  Pi auto-discovers.
+- **Launcher: `pia <agent>` shell function** (in `~/.zshrc`) — spawns a
+  persona-bound Pi with the right model+thinking, e.g. `pia seo-coder` →
+  `pi --model "openai-codex/gpt-5.6-luna:low" --append-system-prompt
+  ~/.pi/agent/personas/agent-seo-coder.md`. Extra lanes: `pia chore` (ft/coder),
+  `pia orc` (gpt-5.6-sol:high, orchestrator). Persona injection smoke-verified
+  via ft backend ("I am seo-coder … I never interpret results").
+- **`pi-herdr` installed globally** (`npm:@andrewjacop/pi-herdr`): a Pi session
+  becomes the orchestrator that spawns/drives agents in visible Herdr panes
+  (herdr_start_agent / send_prompt / wait / delegate). End-to-end pane test is
+  done inside a Herdr session (macOS: launch herdr from the terminal, not
+  brew services — PATH issue).
+- The Archon files (aliases/tiers, `~/.archon/commands/`, smoke workflow) stay
+  as-is — they serve the pipeline use case only (spec A), and Archon does NOT
+  consume the Pi personas.
+
 ## Out of scope
 
 - The build→validate factory workflow (spec A — next).
@@ -190,8 +229,27 @@ Chat/CLI: `@aliases` work anywhere a model can be set; personas are invocable as
 - Per-repo `.archon/` setups, Pi extensions/skills per agent, and an `agent-chore.md`
   persona — all deferred until a concrete need appears.
 
-## Open items (resolved during implementation, not blockers)
+## Open items — resolution log (implementation, 2026-07-14)
 
-1. Confirm `effort` validity for `pi` aliases (see caveats above).
-2. Confirm exact Anthropic auth path Pi uses on this machine (subscription vs API key)
-   during the smoke test — no config change expected either way.
+1. ~~Confirm `effort` validity for `pi` aliases~~ **Resolved:** pi alias effort is
+   accepted at write time but dropped at runtime with a `dag.preset_effort_unsupported`
+   warning (`routePresetEffort` routes only claude/codex). Moot for the final setup:
+   the codex-provider aliases carry effort natively; `@chore` (pi) carries none.
+2. ~~Confirm Anthropic auth path~~ **Resolved:** `@fable` runs on the native claude
+   provider (binary at `/opt/homebrew/bin/claude`, global auth) — smoke-verified live.
+3. Claude model refs: `claude-fable-5` verified working; `claude-opus-4-8` assumed
+   by pattern (same scheme), not yet smoke-tested.
+
+## Final verification (2026-07-14) — ALL LANES GREEN
+
+`agent-roster-smoke` completed successfully: `OK fable` (13.3s), `OK terra` (12.8s),
+`OK luna` (10.1s), `OK chore` (10.2s, on VPN — the ft endpoint is VPN-only).
+
+Two environment fixes were needed along the way:
+- The bun-linked `archon` CLI runs repo source; merge conflicts in the working tree
+  take the whole CLI down until resolved.
+- After merging upstream, `bun install` must be re-run: a stale `node_modules`
+  (`@openai/codex-sdk` 0.139 vs lockfile 0.144.4) made the codex provider spawn an
+  old client, which the API rejects for gpt-5.6 models ("requires a newer version
+  of Codex") even though the system `codex` binary was current — in dev mode the
+  SDK uses its node_modules-bundled binary, never the system one.

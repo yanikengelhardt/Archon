@@ -83,6 +83,15 @@ export function buildRoutingRulesWithProject(projectName?: string): string {
     ? `4. If ambiguous which project → use **${projectName}** (the active project)`
     : '4. If ambiguous which project → ask the user';
 
+  return `${buildWorkflowRoutingSection(rule4)}${buildProjectSetupSection()}`;
+}
+
+/**
+ * Workflow routing rules + /invoke-workflow format. Omitted entirely when
+ * chat.workflowInvocation is disabled — the model must not learn the
+ * invocation syntax at all.
+ */
+function buildWorkflowRoutingSection(rule4: string): string {
   return `## Routing Rules
 
 1. If the user explicitly asks to run/use/start a workflow, or their request clearly matches an available workflow description → invoke that workflow
@@ -118,7 +127,16 @@ Example (ambiguous — answer directly):
 User: "What do you think about adding dark mode?"
 Response: "Adding dark mode would involve... [answer the question]. If you'd like me to create a plan for this, I can run the **archon-idea-to-pr** workflow."
 
-## Project Setup
+`;
+}
+
+/**
+ * Project-setup instructions (/register-project etc.) — independent of
+ * workflow invocation, so it stays in the prompt even when
+ * chat.workflowInvocation is disabled.
+ */
+function buildProjectSetupSection(): string {
+  return `## Project Setup
 
 When a user asks to add a new project:
 1. Clone the repository into ~/.archon/workspaces/:
@@ -144,13 +162,17 @@ IMPORTANT: Always clone into ~/.archon/workspaces/{owner}/{repo}/source unless t
  */
 export function buildOrchestratorPrompt(
   codebases: readonly Codebase[],
-  workflows: readonly WorkflowDefinition[]
+  workflows: readonly WorkflowDefinition[],
+  includeWorkflows = true
 ): string {
+  const capabilityLine = includeWorkflows
+    ? 'You can answer questions directly or invoke workflows for structured development tasks.'
+    : 'You answer questions directly in chat.';
   let prompt = `# Archon Orchestrator
 
 You are Archon, an intelligent coding assistant that manages multiple projects.
 Your working directory is ~/.archon/workspaces/ where all projects live.
-You can answer questions directly or invoke workflows for structured development tasks.
+${capabilityLine}
 
 ## Registered Projects
 
@@ -166,10 +188,13 @@ You can answer questions directly or invoke workflows for structured development
     }
   }
 
-  prompt += '## Available Workflows\n\n';
-  prompt += formatWorkflowSection(workflows);
-
-  prompt += buildRoutingRules();
+  if (includeWorkflows) {
+    prompt += '## Available Workflows\n\n';
+    prompt += formatWorkflowSection(workflows);
+    prompt += buildRoutingRules();
+  } else {
+    prompt += buildProjectSetupSection();
+  }
 
   return prompt;
 }
@@ -182,17 +207,31 @@ You can answer questions directly or invoke workflows for structured development
 export function buildProjectScopedPrompt(
   scopedCodebase: Codebase,
   allCodebases: readonly Codebase[],
-  workflows: readonly WorkflowDefinition[]
+  workflows: readonly WorkflowDefinition[],
+  includeWorkflows = true
 ): string {
   const otherCodebases = allCodebases.filter(c => c.id !== scopedCodebase.id);
+
+  const capabilityLine = includeWorkflows
+    ? 'You can answer questions directly or invoke workflows for structured development tasks.'
+    : 'You answer questions directly in chat.';
+  const scopeLine = includeWorkflows
+    ? `This conversation is scoped to **${scopedCodebase.name}**. Use this project for all workflow invocations unless the user explicitly mentions a different project.`
+    : `This conversation is scoped to **${scopedCodebase.name}**.`;
+  const workflowExecutionRules = includeWorkflows
+    ? `- For project data or metric pulls, first check the Available Workflows section. If a workflow description, trigger, or example matches the requested data source/metric, invoke that workflow instead of running the script directly in chat.
+- Only run repo scripts directly when no listed workflow clearly matches the request, or when you are executing inside a workflow node. Only report missing credentials/files after the script itself fails or the required file is actually absent.
+`
+    : `- Only report missing credentials/files after the script itself fails or the required file is actually absent.
+`;
 
   let prompt = `# Archon Orchestrator
 
 You are Archon, an intelligent coding assistant that manages multiple projects.
 Your working directory is ~/.archon/workspaces/ where all projects live.
-You can answer questions directly or invoke workflows for structured development tasks.
+${capabilityLine}
 
-This conversation is scoped to **${scopedCodebase.name}**. Use this project for all workflow invocations unless the user explicitly mentions a different project.
+${scopeLine}
 
 ## Active Project
 
@@ -200,11 +239,9 @@ ${formatProjectSection(scopedCodebase)}
 
 ## Project Execution Rules
 
-- For project data or metric pulls, first check the Available Workflows section. If a workflow description, trigger, or example matches the requested data source/metric, invoke that workflow instead of running the script directly in chat.
 - Your provider working directory is the active project's directory. Use local files and scripts from that repo directly.
 - Do not assume a credential is unavailable just because it is not present in the inherited shell environment. Many project scripts intentionally load the repo's own \`.env\` file themselves.
-- Only run repo scripts directly when no listed workflow clearly matches the request, or when you are executing inside a workflow node. Only report missing credentials/files after the script itself fails or the required file is actually absent.
-`;
+${workflowExecutionRules}`;
 
   if (otherCodebases.length > 0) {
     prompt += '## Other Registered Projects\n\n';
@@ -214,10 +251,13 @@ ${formatProjectSection(scopedCodebase)}
     }
   }
 
-  prompt += '## Available Workflows\n\n';
-  prompt += formatWorkflowSection(workflows);
-
-  prompt += buildRoutingRulesWithProject(scopedCodebase.name);
+  if (includeWorkflows) {
+    prompt += '## Available Workflows\n\n';
+    prompt += formatWorkflowSection(workflows);
+    prompt += buildRoutingRulesWithProject(scopedCodebase.name);
+  } else {
+    prompt += buildProjectSetupSection();
+  }
 
   return prompt;
 }
@@ -263,13 +303,14 @@ When the user asks what's running, whether a run passed/failed, or to approve / 
 export function buildOrchestratorSystemAppend(
   conversation: Conversation,
   codebases: readonly Codebase[],
-  workflows: readonly WorkflowDefinition[]
+  workflows: readonly WorkflowDefinition[],
+  includeWorkflows = true
 ): string {
   const scopedCodebase = conversation.codebase_id
     ? codebases.find(c => c.id === conversation.codebase_id)
     : undefined;
 
   return scopedCodebase
-    ? buildProjectScopedPrompt(scopedCodebase, codebases, workflows)
-    : buildOrchestratorPrompt(codebases, workflows);
+    ? buildProjectScopedPrompt(scopedCodebase, codebases, workflows, includeWorkflows)
+    : buildOrchestratorPrompt(codebases, workflows, includeWorkflows);
 }
