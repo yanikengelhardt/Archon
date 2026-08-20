@@ -49,6 +49,7 @@ const CLAUDE_RENAMED_TOOLS = {
 
 export const CLAUDE_CAPABILITIES: ProviderCapabilities = {
   sessionResume: true,
+  sessionFork: true,
   mcp: true,
   hooks: true,
   skills: true,
@@ -63,5 +64,7 @@ export const CLAUDE_CAPABILITIES: ProviderCapabilities = {
   thinkingControl: true,
   fallbackModel: true,
   sandbox: true,
+  settingSources: true, // per-node override of the SDK's settingSources option
   nativeTools: true,
+  containerExec: true, // spawns the CLI in-container via spawnClaudeCodeProcess
 };

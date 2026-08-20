@@ -1,6 +1,13 @@
 import { NavLink, Link, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, LayoutDashboard, MessageSquare, Workflow, Settings, LogOut } from 'lucide-react';
+import {
+  BarChart3,
+  LayoutDashboard,
+  MessageSquare,
+  Workflow,
+  Settings,
+  LogOut,
+} from 'lucide-react';
 import { listDashboardRuns, getUpdateCheck, getAuthStatus } from '@/lib/api';
 import { useSession, signOut } from '@/lib/auth-client';
 import { cn } from '@/lib/utils';

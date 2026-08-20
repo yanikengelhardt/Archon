@@ -201,7 +201,7 @@ const DEFAULT_CONFIG_CONTENT = `# Archon Global Configuration
 #   claude:
 #     model: sonnet
 #   codex:
-#     model: gpt-5.4
+#     model: gpt-5.6-sol
 #     modelReasoningEffort: medium
 #     webSearchMode: disabled
 #     additionalDirectories:
@@ -523,6 +523,11 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
     result.chat = { ...result.chat, workflowInvocation: global.chat.workflowInvocation };
   }
 
+  // Container backend defaults (folder projects)
+  if (global.container) {
+    result.container = { ...global.container };
+  }
+
   return result;
 }
 
@@ -577,6 +582,11 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
     result.baseBranch = repo.worktree.baseBranch.trim();
   }
 
+  // Pass remote to callers for git fetch/push operations
+  if (repo.worktree?.remote?.trim()) {
+    result.remote = repo.worktree.remote.trim();
+  }
+
   // Propagate docs path for $DOCS_DIR substitution in workflow commands
   if (repo.docs?.path !== undefined) {
     const trimmed = repo.docs.path.trim();
@@ -595,6 +605,16 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
   // Chat behavior (repo overrides global)
   if (repo.chat?.workflowInvocation !== undefined) {
     result.chat = { ...result.chat, workflowInvocation: repo.chat.workflowInvocation };
+  }
+
+  // Container backend settings — repo overrides global per-field.
+  if (repo.container) {
+    result.container = {
+      ...result.container,
+      ...Object.fromEntries(
+        Object.entries(repo.container).filter(([, value]) => value !== undefined)
+      ),
+    };
   }
 
   return result;

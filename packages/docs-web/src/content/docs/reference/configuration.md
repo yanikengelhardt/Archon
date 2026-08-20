@@ -29,7 +29,7 @@ Archon supports a layered configuration system with sensible defaults, optional 
 └── config.yaml             # Global configuration (optional)
 ```
 
-Home-scoped `workflows/`, `commands/`, and `scripts/` apply to every project on the machine. Repo-local files at `<repoRoot>/.archon/{workflows,commands,scripts}/` override them by filename (or script name). Each directory supports one level of subfolders for grouping; deeper nesting is ignored. See [Global Workflows](/guides/global-workflows/) for details and dotfiles-sync examples.
+Home-scoped `workflows/`, `commands/`, and `scripts/` apply to every project on the machine. Repo-local legacy/shared files at `<repoRoot>/.archon/{workflows,commands,scripts}/` override them by filename (or script name). Shared/grouped layouts support one subfolder; packaged workflows use exactly `workflows/<pack>/<workflow>/` with one YAML directly inside. Package-owned commands and scripts do not fall through across scopes. See [Global Workflows](/guides/global-workflows/) for details and dotfiles-sync examples.
 
 ### Repository-Level (.archon/)
 
@@ -148,6 +148,8 @@ worktree:
                         # <repoRoot>/.worktrees/<branch> instead of under
                         # ~/.archon/workspaces/<owner>/<repo>/worktrees/.
                         # Must be relative; no absolute, no `..` segments.
+  remote: origin        # Optional: git remote name for fetch/push. Auto-detected
+                        # when omitted (origin if it exists, sole remote otherwise).
 
 # Documentation directory
 docs:
@@ -184,7 +186,18 @@ without a `tiers:` block. Other providers must configure any tier they use, or r
 
 ### Claude settingSources
 
-Controls which sources the Claude Agent SDK loads during sessions — `CLAUDE.md`, skills, commands, agents, and hooks:
+Controls which sources the Claude Agent SDK discovers during sessions — `CLAUDE.md`, skills, commands, agents, and hooks. In workflow nodes, discovery does not activate ambient skills: the node's `skills:` list remains the exact active set, and omission/`[]` selects none.
+
+A declared skill that is installed on disk must live under a source that remains
+enabled — `settingSources: ['project']` cannot select a user-global skill, for
+instance — and Archon rejects that mismatch before provider spend. Names that are
+absent from disk entirely, such as Claude's built-in skills and plugin-qualified
+`plugin:skill` entries, are left to the SDK to resolve.
+
+Unrecognized entries are dropped rather than ignored: `settingSources: ['projct']`
+resolves to no sources and logs `claude.setting_sources_invalid_entries`. A typo
+therefore narrows and reports itself, instead of falling back to the permissive
+`['project', 'user']` default.
 
 | Value | Description |
 |-------|-------------|
@@ -237,9 +250,14 @@ worktree:
 
 **Submodule behavior:** When a repo contains `.gitmodules`, submodules are initialized in new worktrees by default (git's `worktree add` does not do this). The check is a cheap filesystem probe — repos without submodules pay zero cost. Submodule init failure throws a classified error (credentials, network, timeout) rather than silently producing a worktree with empty submodule directories. Set `worktree.initSubmodules: false` to opt out.
 
+**Remote behavior:** By default, all git operations (fetch, push, branch tracking) use the `origin` remote. If your repo uses a different remote name, configure `worktree.remote`. Resolution order:
+1. If `worktree.remote` is set: Uses the configured remote name for all operations.
+2. If omitted: Auto-detects — `origin` if it exists, otherwise the sole remote if only one is configured.
+3. If multiple remotes exist and none is named `origin`: Worktree creation **fails with an actionable error** listing the available remotes and suggesting the config fix.
+
 **Base branch behavior:** Before creating a worktree, the canonical workspace is synced to the latest code. Resolution order:
-1. If `worktree.baseBranch` is set: Uses the configured branch. **Fails with an error** if the branch doesn't exist on remote (no silent fallback).
-2. If omitted: Auto-detects the default branch via `git remote show origin`. Works without any config for standard repos.
+1. If `worktree.baseBranch` is set: Uses the configured branch. **Fails with an error** if the branch doesn't exist on the resolved remote (no silent fallback).
+2. If omitted: Auto-detects the default branch via `git symbolic-ref` on the resolved remote. Works without any config for standard repos.
 3. If auto-detection fails and a workflow references `$BASE_BRANCH`: Fails with an error explaining the resolution chain.
 
 **Docs path behavior:** The `docs.path` setting controls where the `$DOCS_DIR` variable points. When not configured, `$DOCS_DIR` defaults to `docs/`. Unlike `$BASE_BRANCH`, this variable always has a safe default and never throws an error. Configure it when your documentation lives outside the standard `docs/` directory (e.g., `packages/docs-web/src/content/docs`).
@@ -269,6 +287,60 @@ recommendedWorkflows:
 
 **Worktree path behavior:** By default, every repo's worktrees live under `~/.archon/workspaces/<owner>/<repo>/worktrees/<branch>` — outside the repo, invisible to the IDE. Set `worktree.path` to opt in to a **repo-local** layout instead: worktrees are created at `<repoRoot>/<worktree.path>/<branch>` so they show up in the file tree and editor workspace. A common choice is `.worktrees`. Because worktrees now live inside the repository tree, you should add the directory to your `.gitignore` (Archon does not modify user-owned files). The configured path must be relative to the repo root; absolute paths and paths containing `..` segments fail loudly at worktree creation rather than silently falling back.
 
+### Container isolation (folder projects)
+
+**Folder projects** run in place by default. Opt into overlay-isolated Docker execution — writes land in an overlay upper layer, not the live root — with the `--container` CLI flag, the `container.enabled` config key, or a workflow's `container.enabled` policy. Valid on both global and repo `.archon/config.yaml` (repo overrides global per-field):
+
+```yaml
+container:
+  image: archon-runner:latest # runner image tag (default: archon-runner:latest)
+  network: bridge # 'bridge' (default) or 'none' (no egress)
+  memoryMb: 4096 # hard memory cap in MiB (positive integer)
+  pidsLimit: 512 # process cap / fork-bomb guard (positive integer)
+  enabled: false # run folder projects in a container without --container (default false)
+```
+
+**Selection precedence:** `--container` flag > workflow `container.enabled` > config `container.enabled` > `false`. (A workflow `enabled: false` hard-disables relative to config, but the flag still wins.)
+
+**Write-back mode** is a per-workflow policy (not a config key). After a container run finishes, its overlay diff is reviewed before touching the live root:
+
+```yaml
+# In a workflow YAML (.archon/workflows/*.yaml):
+container:
+  write_back: approve # 'approve' (default) pauses at a write-back gate; 'auto' applies without pausing
+```
+
+**Prerequisites:** Docker, and the runner image built once with `bun run build:runner-image` (tags `archon-runner:<version>` + `:latest`). Container mode is **folder-project-only** (a repo project errors). Pausing workflows (approval/interactive gates) **are** supported — a pause `docker stop`s the container (near-zero resources while awaiting a decision) and resume rediscovers and restarts it. Neither `$ARTIFACTS_DIR` nor `$STATE_DIR` is mounted into the container — see [Container runs and run output](#container-runs-and-run-output) below. For the full flow, pause economics, and security posture, see the [Container isolation guide](/guides/container-isolation/) and `packages/isolation/docker/SECURITY.md`.
+
+### Container runs and run output
+
+Container runs are the one place where a run's output is **not** addressable from the host
+filesystem by run id. This is a documented limitation, not an oversight — the accurate
+picture:
+
+- A container run has exactly two mounts: the project root at `/mnt/lower` (read-only) and
+  the per-run overlay volume at `/mnt/upper`. `ARCHON_HOME` is never mounted.
+- `ARTIFACTS_DIR` and `STATE_DIR` reach the container only as environment variables, so a
+  node that writes to either from *inside* the container writes into the container's own
+  ephemeral layer, not to the host.
+- The container is **not** destroyed when the run completes. It is removed by the cleanup
+  service (7-day stale window by default) or by an explicit teardown, and `destroy()`
+  removes the container *and* its volume. Until then those files remain readable with
+  `docker exec`.
+
+Net effect: container-run output is a roughly 7-day TTL on an ephemeral container layer,
+reachable by `docker exec`, and **not** addressable by run id from the host. Retrieval is
+therefore non-uniform — "point an agent at run X's artifacts" is a filesystem path for
+every other run, and a `docker exec` into a specific container within the cleanup window
+for a container run. The blast radius is bounded: container mode is folder-projects-only
+and works only with `containerExec`-capable providers.
+
+**Workaround.** A node whose output must reach the host should write into the **project
+root** — the node's working directory inside the container, which is the overlay mount —
+rather than into `$ARTIFACTS_DIR` / `$STATE_DIR`. A plain relative path does this. Writes
+there ride the existing overlay diff plus the approval-gated write-back, so they do land on
+the host.
+
 ## Environment Variables
 
 Environment variables override all other configuration. They are organized by category below.
@@ -285,6 +357,8 @@ Environment variables override all other configuration. They are organized by ca
 | `MAX_CONCURRENT_CONVERSATIONS` | Maximum concurrent AI conversations | `10` |
 | `SESSION_RETENTION_DAYS` | Delete inactive sessions older than N days | `30` |
 | `ARCHON_VERBOSE_BOOT` | When set to `1`, prints `[archon] loaded N keys from …` lines to stderr at boot. Also enabled by `LOG_LEVEL=debug` or `LOG_LEVEL=trace`. Silent by default to avoid interleaving with interactive command output. | -- |
+| `ARCHON_BASH_PATH` | Override the bash executable path used by `bash` nodes and loop `until_bash`. Eagerly validated at resolution time — typos surface immediately instead of as opaque ENOENTs inside the first bash-node fire. | `bash` on Linux/macOS; on Windows, the first existing of the common Git-Bash locations: `%ProgramFiles%\Git\bin\bash.exe`, `%ProgramFiles%\Git\usr\bin\bash.exe`, `%ProgramFiles(x86)%\Git\bin\bash.exe`, `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`, `%USERPROFILE%\scoop\apps\git\current\bin\bash.exe` |
+| `WSL_DISTRO_NAME` | Set automatically by WSL in every distro shell. Archon reads it (via `/api/health`) to emit Windows-host-friendly `vscode://vscode-remote/wsl+<distro>/...` "Open in IDE" URIs. You do not normally set this yourself; override it only to force a specific distro name into the URI. | -- (unset outside WSL) |
 
 ### AI Providers -- Claude
 
@@ -340,6 +414,7 @@ The Copilot provider also reads `assistants.copilot.{model, modelReasoningEffort
 | `DISCORD_BOT_TOKEN` | Discord bot token from Developer Portal | -- |
 | `DISCORD_ALLOWED_USER_IDS` | Comma-separated Discord user IDs for whitelist | Open access |
 | `DISCORD_STREAMING_MODE` | Streaming mode (`stream` or `batch`) | `batch` |
+| `DISCORD_REQUIRE_MENTION` | Require @mention to activate in servers (`true` or `false`); DMs never require a mention | `true` |
 
 ### Platform Adapters -- GitHub
 

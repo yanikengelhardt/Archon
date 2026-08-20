@@ -30,13 +30,20 @@ mock.module('../db/workflows', () => ({
   failWorkflowRun: mockFailWorkflowRun,
   cancelWorkflowRun: mockCancelWorkflowRun,
   pauseWorkflowRun: mockPauseWorkflowRun,
+  claimWriteback: mock(() => Promise.resolve({ claimed: true })),
+  releaseWritebackClaim: mock(() => Promise.resolve()),
 }));
 
 const mockCreateWorkflowEvent = mock(() => Promise.resolve());
-const mockGetCompletedDagNodeOutputs = mock(() => Promise.resolve(new Map<string, string>()));
+const mockGetDagResumeSnapshot = mock(() =>
+  Promise.resolve({
+    completedNodeOutputs: new Map<string, string>(),
+    tokens: { input: 0, output: 0 },
+  })
+);
 mock.module('../db/workflow-events', () => ({
   createWorkflowEvent: mockCreateWorkflowEvent,
-  getCompletedDagNodeOutputs: mockGetCompletedDagNodeOutputs,
+  getDagResumeSnapshot: mockGetDagResumeSnapshot,
 }));
 
 const mockGetCodebase = mock(() => Promise.resolve(null));
@@ -64,6 +71,11 @@ mock.module('@archon/providers', () => ({
 
 mock.module('../config/config-loader', () => ({
   loadConfig: mock(() => Promise.resolve({ assistant: 'claude' })),
+  // Required even though nothing here calls it: this factory replaces the module
+  // for the whole process, and child-isolation-resolver.ts (same `bun test
+  // src/workflows/` batch) does `import { loadRepoConfig }`. Omit it and that
+  // import fails at module-eval with "Export named 'loadRepoConfig' not found".
+  loadRepoConfig: mock(() => Promise.resolve(null)),
 }));
 
 // Per-user provider credentials mocks
@@ -94,9 +106,19 @@ mock.module('../db/env-vars', () => ({
 }));
 mock.module('../db/workflow-node-sessions', () => ({
   getWorkflowNodeSession: mock(() => Promise.resolve(null)),
-  setWorkflowNodeSession: mock(() => Promise.resolve()),
+  upsertWorkflowNodeSession: mock(() => Promise.resolve()),
   deleteWorkflowNodeSessions: mock(() => Promise.resolve()),
 }));
+mock.module(
+  '../db/workflow-run-node-sessions',
+  (): {
+    listWorkflowRunNodeSessions: () => Promise<never[]>;
+    upsertWorkflowRunNodeSession: () => Promise<void>;
+  } => ({
+    listWorkflowRunNodeSessions: mock((): Promise<never[]> => Promise.resolve([])),
+    upsertWorkflowRunNodeSession: mock((): Promise<void> => Promise.resolve()),
+  })
+);
 
 const { createWorkflowStore, createWorkflowDeps } = await import('./store-adapter');
 
@@ -116,11 +138,18 @@ describe('createWorkflowStore', () => {
       'completeWorkflowRun',
       'failWorkflowRun',
       'pauseWorkflowRun',
+      'claimWriteback',
+      'releaseWritebackClaim',
       'cancelWorkflowRun',
       'createWorkflowEvent',
-      'getCompletedDagNodeOutputs',
+      'getDagResumeSnapshot',
       'getCodebase',
       'getCodebaseEnvVars',
+      'getWorkflowNodeSession',
+      'upsertWorkflowNodeSession',
+      'deleteWorkflowNodeSessions',
+      'listWorkflowRunNodeSessions',
+      'upsertWorkflowRunNodeSession',
     ];
     for (const method of requiredMethods) {
       expect(typeof store[method]).toBe('function');
@@ -156,13 +185,16 @@ describe('createWorkflowStore', () => {
     ).resolves.toBeUndefined();
   });
 
-  test('delegates getCompletedDagNodeOutputs to DB', async () => {
-    const expected = new Map([['step1', 'output text']]);
-    mockGetCompletedDagNodeOutputs.mockResolvedValueOnce(expected);
+  test('delegates getDagResumeSnapshot to DB', async () => {
+    const expected = {
+      completedNodeOutputs: new Map([['step1', 'output text']]),
+      tokens: { input: 40, output: 4 },
+    };
+    mockGetDagResumeSnapshot.mockResolvedValueOnce(expected);
     const store = createWorkflowStore();
-    const result = await store.getCompletedDagNodeOutputs('run-123');
+    const result = await store.getDagResumeSnapshot('run-123');
     expect(result).toBe(expected);
-    expect(mockGetCompletedDagNodeOutputs).toHaveBeenCalledWith('run-123');
+    expect(mockGetDagResumeSnapshot).toHaveBeenCalledWith('run-123');
   });
 
   test('delegates cancelWorkflowRun to DB', async () => {

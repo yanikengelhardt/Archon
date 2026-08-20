@@ -125,6 +125,7 @@ Commands:
   workflow status            Show status of running/paused workflows
   workflow runs              List recent runs (all statuses) for this project
   workflow get <run-id>      Show detail for a single run (any status)
+  workflow resume <run-id>   Resume a failed or paused run from completed nodes
   workflow search [query]    Search the workflow marketplace
   workflow install <slug>    Install a workflow from the marketplace
   isolation list             List all active worktrees/environments
@@ -134,7 +135,7 @@ Commands:
   complete <branch> [...]    Complete branch lifecycle (remove worktree + branches)
   serve                      Start the web UI server (downloads web UI on first run)
   skill install [path]       Install the bundled Archon skill into .claude/skills/archon
-  doctor                     Verify your Archon setup (Claude binary, gh auth, DB, adapters)
+  doctor [--full]            Verify your Archon setup (Claude/Codex binaries, gh auth, DB, adapters; --full also probes the OpenCode runtime SDK)
   auth github                Connect your GitHub identity via device flow (multi-user installs)
   ai key set <provider>      Connect an AI provider API key (multi-user installs; key read from prompt/stdin)
   ai login <provider>        Connect a subscription (claude/copilot) via OAuth — codex is API-key only
@@ -158,13 +159,22 @@ Options:
   --cwd <path>               Override working directory (default: current directory)
   --branch, -b <name>        Create worktree for branch (or reuse existing)
   --from, --from-branch <name> Create new branch from specific start point
+  --base <branch>            Per-dispatch base override for epic slices (worktree cut-from + PR target)
   --no-worktree              Run on branch directly without worktree isolation
   --folder                   Register the current non-git directory as a folder project and run in place
-  --resume                   Resume the most recent failed run of the workflow (mutually exclusive with --branch)
+  --input <name>=<value>     Supply a declared workflow input; repeat per input (mutually exclusive with --resume)
+  --resume                   Resume the most recent failed or paused run of the workflow (mutually exclusive with --branch)
+  --dry-run                  Simulate workflow DAG control flow without creating a run or contacting a provider
+  --stubs <path>             YAML node-output map for --dry-run
+  --stubs-init <path>        Write a complete dry-run stub scaffold and exit
+  --default-stubs            Fill missing reached nodes with validated placeholders during --dry-run
+  --exec-code                Execute trusted bash/script nodes during --dry-run (default: require stubs)
+  --pause-at-gates           Stop a dry-run at approval gates instead of auto-approving
   --spawn                    Open setup wizard in a new terminal window (for setup command)
   --quiet, -q                Reduce log verbosity to warnings and errors only
   --verbose, -v              Show debug-level output
   --json                     Output machine-readable JSON (list/status/get/runs/approve/reject/abandon/resume)
+  --events                   For verbose JSON status/get: output raw event rows instead of node summaries
   --detach                   Run 'workflow run' in a detached background child (returns immediately)
   --all                      For 'workflow runs': list across all projects (ignore cwd scope)
   --status <status>          For 'workflow runs': filter to one status (running, completed, failed, ...)
@@ -187,8 +197,10 @@ Examples:
   archon workflow run quick-fix --no-worktree "Fix typo"
   archon workflow run assist --folder "List every repo under this multi-repo root"
   archon workflow run archon-assist --detach "Investigate the flaky test"
+  archon workflow run assist --dry-run --stubs ./stubs.yaml --json
   archon workflow runs --json
   archon workflow get <run-id> --json
+  archon workflow resume <run-id>
   archon continue fix/issue-42 --workflow archon-smart-pr-review "Review the changes"
   archon skill install
   archon skill install /path/to/project
@@ -281,13 +293,16 @@ async function main(): Promise<number> {
         branch: { type: 'string', short: 'b' },
         from: { type: 'string' },
         'from-branch': { type: 'string' },
+        base: { type: 'string' },
         'no-worktree': { type: 'boolean' },
         folder: { type: 'boolean' },
+        container: { type: 'boolean' },
         resume: { type: 'boolean' },
         spawn: { type: 'boolean' },
         quiet: { type: 'boolean', short: 'q' },
         verbose: { type: 'boolean', short: 'v' },
         json: { type: 'boolean' },
+        events: { type: 'boolean' },
         'run-id': { type: 'string' },
         type: { type: 'string' },
         data: { type: 'string' },
@@ -308,6 +323,15 @@ async function main(): Promise<number> {
         limit: { type: 'string' },
         effort: { type: 'string' },
         assistant: { type: 'string' },
+        full: { type: 'boolean' },
+        'dry-run': { type: 'boolean' },
+        stubs: { type: 'string' },
+        'stubs-init': { type: 'string' },
+        'default-stubs': { type: 'boolean' },
+        'exec-code': { type: 'boolean' },
+        'pause-at-gates': { type: 'boolean' },
+        // Repeatable: `--input a=1 --input b=2` yields ['a=1', 'b=2'] (#2554).
+        input: { type: 'string', multiple: true },
       },
       allowPositionals: true,
       strict: false, // Allow unknown flags to pass through
@@ -326,12 +350,20 @@ async function main(): Promise<number> {
   const branchName = values.branch as string | undefined;
   const fromBranch =
     (values.from as string | undefined) ?? (values['from-branch'] as string | undefined);
+  const baseBranch = values.base as string | undefined;
   const noWorktree = values['no-worktree'] as boolean | undefined;
   const folderFlag = values.folder as boolean | undefined;
+  const containerFlag = values.container as boolean | undefined;
   const resumeFlag = values.resume as boolean | undefined;
   const spawnFlag = values.spawn as boolean | undefined;
   const jsonFlag = values.json as boolean | undefined;
   const detachFlag = values.detach as boolean | undefined;
+  const dryRunFlag = values['dry-run'] as boolean | undefined;
+  const stubsPath = values.stubs as string | undefined;
+  const stubsInitPath = values['stubs-init'] as string | undefined;
+  const defaultStubsFlag = values['default-stubs'] as boolean | undefined;
+  const execCodeFlag = values['exec-code'] as boolean | undefined;
+  const pauseAtGatesFlag = values['pause-at-gates'] as boolean | undefined;
   // Handle help flag
   if (values.help) {
     printUsage();
@@ -408,6 +440,10 @@ async function main(): Promise<number> {
       if (repoRoot) {
         // Use repo root as working directory (handles subdirectory case)
         effectiveCwd = repoRoot;
+      } else if (dryRunFlag && command === 'workflow' && subcommand === 'run') {
+        // Dry-run only discovers workflow files and simulates in memory. It does
+        // not need project registration, a database lookup, or a git worktree.
+        effectiveCwd = cwd;
       } else {
         // Not a git repo. It may still be a registered FOLDER project (a
         // multi-repo root or plain ops folder). Consult the DB before rejecting.
@@ -557,6 +593,13 @@ async function main(): Promise<number> {
               );
               return 1;
             }
+            if (noWorktree && baseBranch !== undefined) {
+              console.error(
+                'Error: --base has no effect with --no-worktree.\n' +
+                  'Remove --base or drop --no-worktree.'
+              );
+              return 1;
+            }
             if (resumeFlag && branchName !== undefined) {
               console.error(
                 'Error: --resume and --branch are mutually exclusive.\n' +
@@ -568,8 +611,10 @@ async function main(): Promise<number> {
             const options = {
               branchName,
               fromBranch,
+              baseBranch,
               noWorktree,
               folder: folderFlag,
+              container: containerFlag,
               resume: resumeFlag,
               quiet: values.quiet as boolean | undefined,
               verbose: values.verbose as boolean | undefined,
@@ -580,19 +625,38 @@ async function main(): Promise<number> {
               conversationId: values['conversation-id'] as string | undefined,
               detach: detachFlag,
               json: jsonFlag,
+              dryRun: dryRunFlag,
+              stubsPath,
+              stubsInitPath,
+              defaultStubs: defaultStubsFlag,
+              execCode: execCodeFlag,
+              pauseAtGates: pauseAtGatesFlag,
+              // Raw `name=value` assignments; parsed at the invocation gate (#2554).
+              inputs: values.input as string[] | undefined,
             };
             await workflowRunCommand(effectiveCwd, workflowName, userMessage, options);
             break;
           }
 
           case 'status':
-            await workflowStatusCommand(jsonFlag, values.verbose as boolean | undefined);
+            if (positionals[2] !== undefined) {
+              console.error(
+                'Usage: archon workflow status [--json] [--verbose] [--events]\n' +
+                  'To show a single run, use: archon workflow get <run-id>'
+              );
+              return 1;
+            }
+            await workflowStatusCommand(
+              jsonFlag,
+              values.verbose as boolean | undefined,
+              values.events as boolean | undefined
+            );
             break;
 
           case 'get': {
             const getRunId = positionals[2];
-            if (!getRunId) {
-              console.error('Usage: archon workflow get <run-id> [--json] [--verbose]');
+            if (!getRunId || positionals[3] !== undefined) {
+              console.error('Usage: archon workflow get <run-id> [--json] [--verbose] [--events]');
               return 1;
             }
             // Propagate the command's exit code so `get <id> && ...` and CI
@@ -601,7 +665,8 @@ async function main(): Promise<number> {
               getRunId,
               jsonFlag,
               values.verbose as boolean | undefined,
-              effectiveCwd
+              effectiveCwd,
+              values.events as boolean | undefined
             );
           }
 
@@ -650,9 +715,13 @@ async function main(): Promise<number> {
               console.error('Usage: archon workflow approve <run-id> [comment]');
               return 1;
             }
-            // Accept comment as positional args (everything after run ID) or --comment flag
-            const approveComment =
-              (values.comment as string | undefined) || positionals.slice(3).join(' ') || undefined;
+            // Accept comment as positional args (everything after run ID) or --comment flag.
+            // Explicit empty→undefined conversion (not `|| undefined`): "no comment" must
+            // reach approveWorkflow as undefined so a signal-bearing interactive-loop gate
+            // finalizes instead of re-running (#2074, loop_feedback_given).
+            const rawApproveComment =
+              (values.comment as string | undefined) || positionals.slice(3).join(' ');
+            const approveComment = rawApproveComment.length > 0 ? rawApproveComment : undefined;
             await workflowApproveCommand(approveRunId, approveComment, jsonFlag, effectiveCwd);
             break;
           }
@@ -663,8 +732,9 @@ async function main(): Promise<number> {
               console.error('Usage: archon workflow reject <run-id> [reason]');
               return 1;
             }
-            const rejectReason =
-              (values.reason as string | undefined) || positionals.slice(3).join(' ') || undefined;
+            const rawRejectReason =
+              (values.reason as string | undefined) || positionals.slice(3).join(' ');
+            const rejectReason = rawRejectReason.length > 0 ? rawRejectReason : undefined;
             await workflowRejectCommand(rejectRunId, rejectReason, jsonFlag, effectiveCwd);
             break;
           }
@@ -728,14 +798,14 @@ async function main(): Promise<number> {
             const eventType = values.type as string | undefined;
             if (!runId) {
               console.error(
-                'Usage: archon workflow event emit --run-id <uuid> --type <event-type>'
+                'Usage: archon workflow event emit --run-id <run-id> --type <event-type>'
               );
               console.error('Error: --run-id is required');
               return 1;
             }
             if (!eventType) {
               console.error(
-                'Usage: archon workflow event emit --run-id <uuid> --type <event-type>'
+                'Usage: archon workflow event emit --run-id <run-id> --type <event-type>'
               );
               console.error('Error: --type is required');
               return 1;
@@ -756,7 +826,7 @@ async function main(): Promise<number> {
                 );
               }
             }
-            await workflowEventEmitCommand(runId, eventType, eventData);
+            await workflowEventEmitCommand(runId, eventType, eventData, effectiveCwd);
             break;
           }
 
@@ -870,7 +940,7 @@ async function main(): Promise<number> {
       }
 
       case 'doctor': {
-        return await doctorCommand();
+        return await doctorCommand(undefined, Boolean(values.full));
       }
 
       case 'auth': {
@@ -1033,7 +1103,14 @@ async function main(): Promise<number> {
   }
 }
 
-// Run main and exit with the returned code
+// Exit explicitly so a lingering handle (DB pool, spawned child, timer) can
+// never leave the CLI hanging after its work is done.
+//
+// This is safe for piped output because every machine-readable payload is
+// emitted through `writeStdout()`/`writeJsonLine()` (src/utils/stdout.ts), which
+// resolves only once the bytes have reached the OS. The #2384 truncation
+// happened inside `console.log` at call time — not at exit — so deferring the
+// exit would not have recovered it.
 main()
   .then(exitCode => {
     process.exit(exitCode);

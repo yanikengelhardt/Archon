@@ -10,16 +10,17 @@ import {
   type TurnCompletedEvent,
   type ThreadStartedEvent,
 } from '@openai/codex-sdk';
-import { existsSync, readdirSync, readFileSync, type Dirent } from 'fs';
-import { join } from 'path';
 import type {
   IAgentProvider,
   SendQueryOptions,
+  NodeConfig,
   MessageChunk,
   TokenUsage,
   ProviderCapabilities,
+  CodexProviderDefaults,
 } from '../types';
-import { parseCodexConfig } from './config';
+import { clampEffort } from '../shared/effort';
+import { CODEX_EFFORTS, parseCodexConfig } from './config';
 import { CODEX_CAPABILITIES } from './capabilities';
 import { resolveCodexBinaryPath } from './binary-resolver';
 import { createLogger } from '@archon/paths';
@@ -76,12 +77,43 @@ async function getCodex(configCodexBinaryPath?: string): Promise<Codex> {
 }
 
 /**
+ * Resolve Codex's `modelReasoningEffort` from Archon's inputs.
+ *
+ * Precedence: `nodeConfig.effort` > `assistants.codex.modelReasoningEffort`
+ * from config.yaml — mirroring Copilot's `resolveCopilotReasoning`, so a workflow's
+ * declared depth beats the install default on both providers alike.
+ *
+ * Codex has no `max` rung, so `effort: max` clamps to `xhigh` (see
+ * `clampEffort`). A value that is not on the ladder at all falls back to the
+ * config default rather than being invented; the workflow loader rejects such
+ * values at parse time, so this only guards programmatic callers.
+ */
+function resolveModelReasoningEffort(
+  nodeConfig: NodeConfig | undefined,
+  configured: CodexProviderDefaults['modelReasoningEffort']
+): CodexProviderDefaults['modelReasoningEffort'] {
+  const declared = nodeConfig?.effort;
+  if (declared === undefined) return configured;
+
+  const clamped = clampEffort(declared, CODEX_EFFORTS);
+  if (clamped === undefined) {
+    getLog().warn({ effort: declared }, 'codex.effort_unrecognized');
+    return configured;
+  }
+  if (clamped !== declared) {
+    getLog().debug({ declared, applied: clamped }, 'codex.effort_clamped');
+  }
+  return clamped;
+}
+
+/**
  * Build thread options for Codex SDK
  */
 function buildThreadOptions(
   cwd: string,
   model?: string,
-  assistantConfig?: Record<string, unknown>
+  assistantConfig?: Record<string, unknown>,
+  nodeConfig?: NodeConfig
 ): ThreadOptions {
   const config = parseCodexConfig(assistantConfig ?? {});
   return {
@@ -91,7 +123,7 @@ function buildThreadOptions(
     networkAccessEnabled: true,
     approvalPolicy: 'never',
     model: model ?? config.model,
-    modelReasoningEffort: config.modelReasoningEffort,
+    modelReasoningEffort: resolveModelReasoningEffort(nodeConfig, config.modelReasoningEffort),
     webSearchMode: config.webSearchMode,
     additionalDirectories: config.additionalDirectories,
   };
@@ -212,69 +244,39 @@ function buildCodexMcpConfigOverrides(
   return { mcp_servers: mcpServers };
 }
 
-const CODEX_MODEL_FALLBACKS: Record<string, string> = {};
-
-function findSkillMarkdown(root: string, skillName: string, depth = 0): string | undefined {
-  if (depth > 3) return undefined;
-
-  const directPath = join(root, skillName, 'SKILL.md');
-  if (existsSync(directPath)) return directPath;
-
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(root, { withFileTypes: true, encoding: 'utf8' });
-  } catch {
-    return undefined;
-  }
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const found = findSkillMarkdown(join(root, entry.name), skillName, depth + 1);
-    if (found) return found;
-  }
-  return undefined;
+function isWorkflowNode(requestOptions?: SendQueryOptions): boolean {
+  const nodeId = requestOptions?.nodeConfig?.nodeId;
+  return typeof nodeId === 'string' && nodeId.trim().length > 0;
 }
 
-function resolveSkillInstruction(cwd: string, skillName: string): string | undefined {
-  const roots = [
-    join(cwd, '.agents', 'skills'),
-    join(cwd, '.codex', 'skills'),
-    join(cwd, '.claude', 'skills'),
-  ];
-
-  for (const root of roots) {
-    const skillPath = findSkillMarkdown(root, skillName);
-    if (skillPath) {
-      return readFileSync(skillPath, 'utf-8');
-    }
-  }
-
-  return undefined;
+function withWorkflowSkillCatalogDisabled(config?: CodexConfigOverrides): CodexConfigOverrides {
+  return {
+    ...(config ?? {}),
+    skills: { include_instructions: false },
+  };
 }
 
-function buildSkillPromptPrefix(cwd: string, skillNames: string[] | undefined): string {
-  if (!skillNames || skillNames.length === 0) return '';
-
-  const blocks: string[] = [];
-  const missing: string[] = [];
-  for (const skillName of [...new Set(skillNames)]) {
-    const instruction = resolveSkillInstruction(cwd, skillName);
-    if (instruction) {
-      blocks.push(`## Skill: ${skillName}\n\n${instruction.trim()}`);
-    } else {
-      missing.push(skillName);
-    }
-  }
-
-  const missingBlock =
-    missing.length > 0
-      ? `\n\nMissing requested skills: ${missing.join(', ')}. Continue without those skills.`
-      : '';
-
-  return blocks.length > 0
-    ? `Use the following skill instructions for this task.${missingBlock}\n\n${blocks.join('\n\n')}\n\n---\n\n`
-    : '';
+function isWorkflowSkillCatalogConfigUnsupported(errorMessage: string): boolean {
+  const normalized = errorMessage.toLowerCase();
+  const namesCatalogSetting =
+    normalized.includes('skills.include_instructions') ||
+    normalized.includes('include_instructions');
+  const isConfigRejection =
+    normalized.includes('config') ||
+    normalized.includes('unknown field') ||
+    normalized.includes('unknown key') ||
+    normalized.includes('unrecognized') ||
+    normalized.includes('failed to parse');
+  return namesCatalogSetting && isConfigRejection;
 }
+
+// Maps slugs that ChatGPT-plan accounts now reject (previously shipped as Archon
+// suggestions/defaults) to a current, plan-accepted slug to suggest instead.
+const CODEX_MODEL_FALLBACKS: Record<string, string> = {
+  'gpt-5.3-codex': 'gpt-5.6-sol',
+  'gpt-5.2-codex': 'gpt-5.6-sol',
+  'gpt-5.2': 'gpt-5.6-sol',
+};
 
 function isModelAccessError(errorMessage: string): boolean {
   const m = errorMessage.toLowerCase();
@@ -379,11 +381,64 @@ function buildTurnOptions(requestOptions?: SendQueryOptions): {
   return { turnOptions, hasOutputFormat };
 }
 
+// ─── Effective Prompt Builder ────────────────────────────────────────────
+
+/**
+ * Fold the request/node-level systemPrompt into the user prompt.
+ *
+ * The Codex SDK (verified at @openai/codex-sdk 0.144.5) exposes NO
+ * instructions/system-prompt channel on ThreadOptions or TurnOptions, so the
+ * only delivery mechanism is prepending to the prompt string, separated by
+ * the same `---` delimiter augmentPromptForJsonSchema uses. See issue #1837.
+ *
+ * Precedence mirrors the Pi provider: request-level systemPrompt wins over
+ * node-level. Only string / string[] are supported; SystemPromptPreset
+ * objects are Claude-specific and dropped with a WARN (the orchestrator
+ * already sends non-Claude providers a plain string).
+ *
+ * The prepend intentionally repeats on EVERY turn, including resumed
+ * threads: the provider cannot know whether a resumed session's earlier
+ * turns carried the instructions (the session may predate this fix), and
+ * both the resume-failure fallback and cold retry attempts start fresh
+ * threads where first-turn-only logic would drop the instructions exactly
+ * when they are most needed. This matches Claude, which receives the
+ * systemPrompt on every query.
+ */
+function buildEffectivePrompt(prompt: string, requestOptions?: SendQueryOptions): string {
+  const raw = requestOptions?.systemPrompt ?? requestOptions?.nodeConfig?.systemPrompt;
+  if (raw === undefined) {
+    return prompt;
+  }
+  let systemText: string | undefined;
+  if (typeof raw === 'string') {
+    systemText = raw;
+  } else if (Array.isArray(raw)) {
+    systemText = raw.join('\n\n');
+  }
+  if (systemText === undefined) {
+    getLog().warn({ systemPromptType: typeof raw }, 'codex.system_prompt_dropped_preset');
+    return prompt;
+  }
+  if (systemText.trim() === '') {
+    return prompt;
+  }
+  return `${systemText}\n\n---\n\n${prompt}`;
+}
+
 // ─── Stream Normalizer ───────────────────────────────────────────────────
 
 /** State maintained across Codex event stream normalization. */
 interface CodexStreamState {
   lastTodoListSignature?: string;
+  startedToolItemIds: Set<string>;
+  completedToolItemIds: Set<string>;
+}
+
+function getMcpToolName(item: Record<string, unknown>): string {
+  const server = item.server as string | undefined;
+  const tool = item.tool as string | undefined;
+  const toolInfo = server && tool ? `${server}/${tool}` : (tool ?? server ?? 'MCP tool');
+  return `🔌 MCP: ${toolInfo}`;
 }
 
 /**
@@ -398,7 +453,10 @@ async function* streamCodexEvents(
   surfaceMcpClientErrors = false,
   model?: string
 ): AsyncGenerator<MessageChunk> {
-  const state: CodexStreamState = {};
+  const state: CodexStreamState = {
+    startedToolItemIds: new Set<string>(),
+    completedToolItemIds: new Set<string>(),
+  };
   let accumulatedText = '';
 
   // A new thread's id is assigned during the run via the `thread.started` event
@@ -447,11 +505,33 @@ async function* streamCodexEvents(
     }
 
     if (event.type === 'item.started') {
-      const item = event.item as { type: string; id: string };
-      getLog().debug(
-        { eventType: event.type, itemType: item.type, itemId: item.id },
-        'item_started'
-      );
+      const item = event.item as Record<string, unknown>;
+      const itemType = item.type as string;
+      const itemId = item.id as string;
+      getLog().debug({ eventType: event.type, itemType, itemId }, 'item_started');
+
+      let toolName: string | undefined;
+      if (itemType === 'command_execution') {
+        if (typeof item.command === 'string' && item.command.length > 0) {
+          toolName = item.command;
+        } else {
+          getLog().warn({ itemId }, 'command_execution_missing_command');
+        }
+      } else if (itemType === 'web_search') {
+        if (typeof item.query === 'string' && item.query.length > 0) {
+          toolName = `🔍 Searching: ${item.query}`;
+        } else {
+          getLog().debug({ itemId }, 'web_search_missing_query');
+        }
+      } else if (itemType === 'mcp_tool_call') {
+        toolName = getMcpToolName(item);
+      }
+
+      if (toolName && itemId && !state.startedToolItemIds.has(itemId)) {
+        state.startedToolItemIds.add(itemId);
+        yield { type: 'tool', toolName, toolCallId: itemId };
+      }
+      continue;
     }
 
     if (event.type === 'error') {
@@ -502,6 +582,22 @@ async function* streamCodexEvents(
       }
       getLog().debug(logContext, 'item_completed');
 
+      const itemId = item.id as string;
+      const isToolItem =
+        itemType === 'command_execution' ||
+        itemType === 'web_search' ||
+        itemType === 'mcp_tool_call';
+      if (isToolItem) {
+        if (state.completedToolItemIds.has(itemId)) {
+          getLog().warn({ itemId, itemType }, 'tool_item_duplicate_completion');
+          continue;
+        }
+        state.completedToolItemIds.add(itemId);
+        if (!state.startedToolItemIds.has(itemId)) {
+          getLog().warn({ itemId, itemType }, 'tool_item_completed_without_start');
+        }
+      }
+
       switch (itemType) {
         case 'agent_message':
           if (item.text) {
@@ -515,14 +611,24 @@ async function* streamCodexEvents(
         case 'command_execution':
           if (item.command) {
             const cmd = item.command as string;
-            yield { type: 'tool', toolName: cmd };
             const exitCode = item.exit_code as number | null | undefined;
             const exitSuffix =
               exitCode != null && exitCode !== 0 ? `\n[exit code: ${String(exitCode)}]` : '';
+            let toolOutcome: 'success' | 'error' | 'unknown';
+            if (exitCode === 0) {
+              toolOutcome = 'success';
+            } else if (exitCode == null) {
+              toolOutcome = 'unknown';
+            } else {
+              toolOutcome = 'error';
+            }
             yield {
               type: 'tool_result',
               toolName: cmd,
               toolOutput: ((item.aggregated_output as string) ?? '') + exitSuffix,
+              toolCallId: itemId,
+              toolOutcome,
+              ...(exitCode != null ? { exitCode } : {}),
             };
           } else {
             getLog().warn({ itemId: item.id }, 'command_execution_missing_command');
@@ -538,8 +644,13 @@ async function* streamCodexEvents(
         case 'web_search':
           if (item.query) {
             const searchToolName = `🔍 Searching: ${item.query as string}`;
-            yield { type: 'tool', toolName: searchToolName };
-            yield { type: 'tool_result', toolName: searchToolName, toolOutput: '' };
+            yield {
+              type: 'tool_result',
+              toolName: searchToolName,
+              toolOutput: '',
+              toolCallId: itemId,
+              toolOutcome: 'unknown',
+            };
           } else {
             getLog().debug({ itemId: item.id }, 'web_search_missing_query');
           }
@@ -610,10 +721,7 @@ async function* streamCodexEvents(
         case 'mcp_tool_call': {
           const server = item.server as string | undefined;
           const tool = item.tool as string | undefined;
-          const toolInfo = server && tool ? `${server}/${tool}` : (tool ?? server ?? 'MCP tool');
-          const mcpToolName = `🔌 MCP: ${toolInfo}`;
-
-          yield { type: 'tool', toolName: mcpToolName };
+          const mcpToolName = getMcpToolName(item);
 
           if ((item.status as string) === 'failed') {
             getLog().warn(
@@ -624,7 +732,13 @@ async function* streamCodexEvents(
             const errMsg = mcpError?.message
               ? `❌ Error: ${mcpError.message}`
               : '❌ Error: MCP tool failed';
-            yield { type: 'tool_result', toolName: mcpToolName, toolOutput: errMsg };
+            yield {
+              type: 'tool_result',
+              toolName: mcpToolName,
+              toolOutput: errMsg,
+              toolCallId: itemId,
+              toolOutcome: 'error',
+            };
           } else {
             let toolOutput = '';
             const mcpResult = item.result as { content?: unknown } | undefined;
@@ -643,7 +757,13 @@ async function* streamCodexEvents(
                 );
               }
             }
-            yield { type: 'tool_result', toolName: mcpToolName, toolOutput };
+            yield {
+              type: 'tool_result',
+              toolName: mcpToolName,
+              toolOutput,
+              toolCallId: itemId,
+              toolOutcome: 'success',
+            };
           }
           break;
         }
@@ -746,6 +866,7 @@ function classifyAndEnrichCodexError(
  * sendQuery orchestrates the following internal helpers:
  * - buildThreadOptions: SDK thread configuration
  * - buildTurnOptions: per-turn configuration (output schema, abort signal)
+ * - buildEffectivePrompt: systemPrompt delivery via prompt prepend (no SDK channel)
  * - streamCodexEvents: raw SDK event normalization into MessageChunks
  * - classifyAndEnrichCodexError: error classification for retry decisions
  */
@@ -796,7 +917,7 @@ export class CodexProvider implements IAgentProvider {
     const assistantConfig = requestOptions?.assistantConfig ?? {};
     const codexConfig = parseCodexConfig(assistantConfig);
     const providerWarnings: ProviderWarning[] = [];
-    let codexConfigOverrides: CodexConfigOverrides | undefined;
+    let declaredMcpConfigOverrides: CodexConfigOverrides | undefined;
 
     if (requestOptions?.nodeConfig?.mcp) {
       const mcpPath = requestOptions.nodeConfig.mcp;
@@ -805,7 +926,7 @@ export class CodexProvider implements IAgentProvider {
         cwd,
         buildMcpEnvSource(requestOptions.env)
       );
-      codexConfigOverrides = buildCodexMcpConfigOverrides(servers);
+      declaredMcpConfigOverrides = buildCodexMcpConfigOverrides(servers);
       getLog().info({ serverNames, mcpPath }, 'codex.mcp_config_loaded');
       if (missingVars.length > 0) {
         const uniqueVars = [...new Set(missingVars)];
@@ -817,19 +938,27 @@ export class CodexProvider implements IAgentProvider {
       }
     }
 
+    const suppressWorkflowSkillCatalog = isWorkflowNode(requestOptions);
+    const initialConfigOverrides = suppressWorkflowSkillCatalog
+      ? withWorkflowSkillCatalogDisabled(declaredMcpConfigOverrides)
+      : declaredMcpConfigOverrides;
+
     for (const warning of providerWarnings) {
       yield { type: 'system', content: `⚠️ ${warning.message}` };
     }
-    const skillPromptPrefix = buildSkillPromptPrefix(cwd, requestOptions?.nodeConfig?.skills);
-    const effectivePrompt = skillPromptPrefix ? `${skillPromptPrefix}${prompt}` : prompt;
 
     // 1. Initialize SDK and build thread options
-    const codex = await this.createCodexClient(
+    let codex = await this.createCodexClient(
       codexConfig.codexBinaryPath,
       requestOptions?.env,
-      codexConfigOverrides
+      initialConfigOverrides
     );
-    const threadOptions = buildThreadOptions(cwd, requestOptions?.model, assistantConfig);
+    const threadOptions = buildThreadOptions(
+      cwd,
+      requestOptions?.model,
+      assistantConfig,
+      requestOptions?.nodeConfig
+    );
 
     if (requestOptions?.abortSignal?.aborted) {
       throw new Error('Query aborted');
@@ -875,9 +1004,13 @@ export class CodexProvider implements IAgentProvider {
       };
     }
 
-    // 3. Build turn options
+    // 3. Build turn options and the effective prompt (systemPrompt prepend).
+    // Computed once before the retry loop so cold retry attempts, which start
+    // fresh threads, also carry the system instructions.
     const { turnOptions, hasOutputFormat } = buildTurnOptions(requestOptions);
+    const effectivePrompt = buildEffectivePrompt(prompt, requestOptions);
     let lastError: Error | undefined;
+    let skillCatalogCompatibilityFallbackUsed = false;
 
     for (let attempt = 0; attempt <= MAX_SUBPROCESS_RETRIES; attempt++) {
       if (requestOptions?.abortSignal?.aborted) {
@@ -918,25 +1051,77 @@ export class CodexProvider implements IAgentProvider {
         }
 
         try {
-          // 4. Run streamed turn
-          const result = await thread.runStreamed(effectivePrompt, turnOptions);
+          // 4. Run and consume the streamed turn. Codex starts its subprocess
+          // lazily while events are iterated, so compatibility errors must be
+          // caught around both runStreamed() and event consumption.
+          let providerEventEmitted = false;
+          while (true) {
+            try {
+              const result = await thread.runStreamed(effectivePrompt, turnOptions);
+              for await (const chunk of withResumedOutcome(
+                streamCodexEvents(
+                  result.events as AsyncIterable<Record<string, unknown>>,
+                  hasOutputFormat,
+                  thread.id,
+                  attemptController.signal,
+                  Boolean(requestOptions?.nodeConfig?.mcp)
+                ),
+                // Stamp from the attempt that produced the result: any retry
+                // (attempt > 0) re-runs on a fresh startThread (cold), so the prior
+                // session context is lost even when the initial resumeThread succeeded.
+                resumedOutcome(resumeSessionId, !sessionResumeFailed && attempt === 0)
+              )) {
+                providerEventEmitted = true;
+                yield chunk;
+              }
+              return;
+            } catch (error) {
+              const err = error as Error;
+              if (
+                providerEventEmitted ||
+                !suppressWorkflowSkillCatalog ||
+                skillCatalogCompatibilityFallbackUsed ||
+                !isWorkflowSkillCatalogConfigUnsupported(err.message)
+              ) {
+                throw error;
+              }
 
-          // 5. Stream normalized events (fresh state per attempt to avoid dedup leaks)
-          yield* withResumedOutcome(
-            streamCodexEvents(
-              result.events as AsyncIterable<Record<string, unknown>>,
-              hasOutputFormat,
-              thread.id,
-              attemptController.signal,
-              Boolean(requestOptions?.nodeConfig?.mcp),
-              threadOptions.model
-            ),
-            // Stamp from the attempt that produced the result: any retry
-            // (attempt > 0) re-runs on a fresh startThread (cold), so the prior
-            // session context is lost even when the initial resumeThread succeeded.
-            resumedOutcome(resumeSessionId, !sessionResumeFailed && attempt === 0)
-          );
-          return;
+              skillCatalogCompatibilityFallbackUsed = true;
+              getLog().warn(
+                { err, nodeId: requestOptions?.nodeConfig?.nodeId },
+                'codex.workflow_skill_catalog_suppression_unsupported'
+              );
+              yield {
+                type: 'system',
+                content:
+                  '⚠️ This Codex binary does not support suppressing the automatic skill catalog. Continuing with native skill discovery enabled.',
+              };
+
+              codex = await this.createCodexClient(
+                codexConfig.codexBinaryPath,
+                requestOptions?.env,
+                declaredMcpConfigOverrides
+              );
+              if (resumeSessionId) {
+                try {
+                  thread = codex.resumeThread(resumeSessionId, threadOptions);
+                } catch (resumeError) {
+                  getLog().error(
+                    { err: resumeError, sessionId: resumeSessionId },
+                    'resume_thread_failed'
+                  );
+                  thread = codex.startThread(threadOptions);
+                  sessionResumeFailed = true;
+                  yield {
+                    type: 'system',
+                    content: '⚠️ Could not resume previous session. Starting fresh conversation.',
+                  };
+                }
+              } else {
+                thread = codex.startThread(threadOptions);
+              }
+            }
+          }
         } catch (error) {
           const err = error as Error;
 

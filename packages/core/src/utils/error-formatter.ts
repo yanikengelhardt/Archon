@@ -15,21 +15,32 @@ export function classifyAndFormatError(error: Error): string {
   const message = error.message || '';
   const normalized = message.trim().toLowerCase();
 
-  // Provider-specific "usage limit reached" messages that don't include "rate limit".
-  // Example: "You've hit your limit · resets 8pm (Europe/Berlin)"
-  if (normalized.includes('hit your limit') || normalized.includes('usage limit')) {
-    return '⚠️ AI rate limit reached. Please wait and try again later.';
-  }
-
   // Some libraries (or non-Error throws) can surface meaningless messages like "success".
   // Treat these as unknown errors to avoid confusing users.
   if (normalized === 'success' || normalized === 'ok') {
     return '⚠️ An unexpected error occurred. Try /reset to start a fresh session.';
   }
 
-  // AI/SDK errors - rate limits
-  if (message.includes('rate limit') || message.includes('Rate limit')) {
-    return '⚠️ AI rate limit reached. Please wait a moment and try again.';
+  // AI-provider rate-limit / usage-cap classification
+  // Broad substrings are intentional: every call site feeds errors from handling
+  // an AI conversation turn, so a bare "usage limit" needs no provider prefix.
+  const lower = message.toLowerCase();
+  if (
+    lower.includes('rate limit') ||
+    lower.includes('hit your limit') ||
+    lower.includes('usage limit') ||
+    lower.includes('session limit')
+  ) {
+    // Anchor on · (Claude format: "... · resets 4:50pm (UTC)"); stop at · or newline so "p.m." isn't truncated.
+    // The no-· fallback also drops any follow-on sentence (period + capital letter), so shapes like
+    // "Claude session limit reached — resets 3:20pm (UTC). Abandon this run…" yield just the reset clause.
+    const reset =
+      /·\s*(resets[^·\n]*)/i.exec(message)?.[1]?.trim() ??
+      /resets[^·\n]*/i
+        .exec(message)?.[0]
+        ?.replace(/\.\s+[A-Z][\s\S]*$/, '')
+        .trim();
+    return `⚠️ AI usage limit reached${reset ? ` (${reset})` : ''}. Please wait and try again.`;
   }
 
   // Claude-specific auth errors — OAuth token refresh failures

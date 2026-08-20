@@ -236,15 +236,19 @@ Each node has exactly ONE of: `command`, `prompt`, `bash`, `script`, `loop`, `lo
   deps: ["pandas>=2.0"]     # Optional, uv only — 'uv run --with <dep>'
 ```
 
-**Loop node** — iterates AI prompt until completion:
+**Loop node** — iterates AI prompt until completion. Declare at least one of
+`until` / `until_bash`; drop `until` when the condition is deterministic, so no
+prose is matched at all:
 ```yaml
 - id: implement
   loop:
     prompt: "Implement next story. When done: <promise>COMPLETE</promise>"
-    until: COMPLETE
+    until: COMPLETE               # Prose signal
     max_iterations: 10
     fresh_context: true
-    until_bash: "bun run test"    # Optional: exit 0 = done
+    until_bash: "bun run test"    # Exit 0 = done
+    # until_field: done           # Or: a declared boolean in this node's output_format
+    # At least ONE of until / until_bash / until_field
 ```
 
 **Loop group node** — repeats a multi-node sub-DAG body per iteration (implement → test → review as one repeated cycle):
@@ -325,7 +329,7 @@ Full variable reference: Read `references/variables.md`
 
 ### Advanced Features (Command/Prompt Nodes)
 
-`output_format` (structured JSON output — all providers, schema-validated, node fails on miss), `hooks` (tool interception — Claude + OpenCode), `mcp` (external tool servers — all providers except Pi), `skills` (per-node injection on Claude/Pi/OpenCode/Copilot; Codex via filesystem), `allowed_tools`/`denied_tools` (tool restrictions — all except Codex), `agents` (inline sub-agents — Claude/OpenCode/Copilot), `persist_session` (cross-run AI memory), `output_type` (typed artifact sidecars).
+`output_format` (structured JSON output — all providers, schema-validated, node fails on miss), `hooks` (tool interception — Claude only), `mcp` (external tool servers — all providers except Pi), `skills` (per-node injection on Claude/Pi/OpenCode/Copilot; Codex via filesystem), `allowed_tools`/`denied_tools` (tool restrictions — all except Codex), `agents` (sub-agents — inline definitions on Claude; OpenCode/Copilot select CONFIGURED agents by name, not inline definitions), `persist_session` (cross-run AI memory), `output_type` (typed artifact sidecars).
 
 For details: Read `references/dag-advanced.md`
 

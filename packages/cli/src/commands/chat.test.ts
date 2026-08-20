@@ -105,6 +105,9 @@ describe('chatCommand', () => {
       expect.stringMatching(/^cli-chat-\d+-[a-z0-9]+$/),
       undefined,
       undefined,
+      // userId — the CLI has no identity yet; assistantTypeOverride is last so
+      // upstream's positional callers keep binding userId to the 5th slot.
+      undefined,
       'codex'
     );
   });

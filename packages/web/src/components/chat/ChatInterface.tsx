@@ -31,6 +31,7 @@ import type {
   FileAttachment,
   ToolCallDisplay,
   ErrorDisplay,
+  TextEventMeta,
   WorkflowDispatchEvent,
 } from '@/lib/types';
 import { applyOnText } from '@/lib/chat-message-reducer';
@@ -43,6 +44,7 @@ import {
 } from '@/lib/message-cache';
 import { useProject } from '@/contexts/ProjectContext';
 import { ensureUtc } from '@/lib/format';
+import { resolveChatHeaderPath } from '@/lib/chat-header';
 
 function mapMessageRow(row: MessageResponse): ChatMessage {
   let meta: {
@@ -105,11 +107,13 @@ function mapMessageRow(row: MessageResponse): ChatMessage {
 interface ChatInterfaceProps {
   conversationId: string;
   assistantType?: AiAssistantType;
+  cwdOverride?: string | null;
 }
 
 export function ChatInterface({
   conversationId,
   assistantType = 'claude',
+  cwdOverride,
 }: ChatInterfaceProps): React.ReactElement {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -145,6 +149,8 @@ export function ChatInterface({
   });
   // Default to true (hide button) until server confirms non-Docker — prevents broken vscode:// links
   const isDocker = health?.is_docker ?? true;
+  const isWsl = health?.is_wsl ?? false;
+  const wslDistro = health?.wsl_distro;
 
   // Sync messages to cache for persistence across navigation
   useEffect(() => {
@@ -291,22 +297,19 @@ export function ChatInterface({
       ? codebases?.find(cb => cb.id === selectedProjectId)
       : undefined;
   const headerTitle = currentConv?.title ?? 'Chat';
-  const headerSubtitle = currentConv?.cwd ?? undefined;
+  const headerSubtitle = resolveChatHeaderPath(currentConv?.cwd, cwdOverride);
 
   const nextId = (): string => {
     messageIdCounter.current += 1;
     return `msg-${String(messageIdCounter.current)}`;
   };
 
-  const onText = useCallback(
-    (content: string, workflowResult?: { workflowName: string; runId: string }): void => {
-      // First AI text received — the thinking placeholder is about to gain content,
-      // so the hydration merge no longer needs the sendInFlight guard.
-      setSendInFlight(false);
-      setMessages(prev => applyOnText(prev, content, undefined, undefined, workflowResult));
-    },
-    []
-  );
+  const onText = useCallback((content: string, meta?: TextEventMeta): void => {
+    // First AI text received — the thinking placeholder is about to gain content,
+    // so the hydration merge no longer needs the sendInFlight guard.
+    setSendInFlight(false);
+    setMessages(prev => applyOnText(prev, content, undefined, undefined, meta));
+  }, []);
 
   const onToolCall = useCallback(
     (name: string, input: Record<string, unknown>, toolCallId?: string): void => {
@@ -717,6 +720,8 @@ export function ChatInterface({
         projectName={currentCodebase?.name ?? contextCodebase?.name}
         connected={isNewChat ? undefined : connected}
         isDocker={isDocker}
+        isWsl={isWsl}
+        wslDistro={wslDistro}
       />
       {(conversationsError || codebasesError) && (
         <div className="flex gap-2 px-4 py-1">

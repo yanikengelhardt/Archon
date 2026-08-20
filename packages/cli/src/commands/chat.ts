@@ -25,6 +25,7 @@ export async function chatCommand(message: string, options?: ChatCommandOptions)
     conversationId,
     undefined,
     undefined,
+    undefined,
     options?.assistantType
   );
   adapter.setConversationDbId(conversationId, conversation.id);

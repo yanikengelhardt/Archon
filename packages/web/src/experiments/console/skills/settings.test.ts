@@ -43,13 +43,13 @@ describe('buildAssistantUpdate', () => {
     const body = buildAssistantUpdate(
       form({
         assistant: 'codex',
-        models: { codex: 'gpt-5.4' },
+        models: { codex: 'gpt-5.6-sol' },
         modelReasoningEffort: 'high',
         webSearchMode: 'live',
       })
     );
     expect(body.assistants).toEqual({
-      codex: { model: 'gpt-5.4', modelReasoningEffort: 'high', webSearchMode: 'live' },
+      codex: { model: 'gpt-5.6-sol', modelReasoningEffort: 'high', webSearchMode: 'live' },
     });
   });
 

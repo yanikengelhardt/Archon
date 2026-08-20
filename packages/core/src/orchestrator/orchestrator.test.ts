@@ -109,6 +109,11 @@ const mockGetProviderCapabilities = mock(() => ({
 mock.module('@archon/providers', () => ({
   getAgentProvider: mockGetAgentProvider,
   getProviderCapabilities: mockGetProviderCapabilities,
+  // `validEffortsForProvider` (@archon/workflows/model-validation) reads the
+  // registry to decide whether a tier's `effort` reaches this provider (#2556).
+  // Without this the REAL implementation runs against an empty registry and
+  // every provider looks unregistered.
+  isRegisteredProvider: mock(() => true),
   getRegisteredProviders: mock(() => []),
   // credentials/delivery (#1955) imports these from '@archon/providers'.
   PI_PROVIDER_ENV_VARS: { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' },
@@ -146,6 +151,10 @@ const mockLoadConfig = mock(() =>
 
 mock.module('../config/config-loader', () => ({
   loadConfig: mockLoadConfig,
+  // orchestrator.ts imports createChildWorktreeResolver, which imports
+  // loadRepoConfig by name. This factory replaces the module process-wide, so
+  // omitting it fails that import at module-eval even though no test calls it.
+  loadRepoConfig: mock(() => Promise.resolve(null)),
 }));
 
 // Worktree sync mock
@@ -686,7 +695,8 @@ describe('orchestrator-agent handleMessage', () => {
       expect(mockBuildOrchestratorSystemAppend).toHaveBeenCalledWith(
         expect.objectContaining({ id: expect.any(String) }),
         [mockCodebase],
-        expect.any(Array)
+        expect.any(Array),
+        true
       );
     });
 
@@ -704,7 +714,8 @@ describe('orchestrator-agent handleMessage', () => {
       expect(mockBuildOrchestratorSystemAppend).toHaveBeenCalledWith(
         expect.objectContaining({ codebase_id: 'codebase-789' }),
         [mockCodebase],
-        expect.any(Array)
+        expect.any(Array),
+        true
       );
     });
 
@@ -868,7 +879,9 @@ describe('orchestrator-agent handleMessage', () => {
         expect.anything(),
         expect.objectContaining({
           model: 'gpt-5.5',
-          assistantConfig: expect.objectContaining({ modelReasoningEffort: 'high' }),
+          // #2556: a tier's `effort` goes on the one nodeConfig channel for
+          // every provider; Codex translates it to modelReasoningEffort itself.
+          nodeConfig: expect.objectContaining({ effort: 'high' }),
         })
       );
       expect(mockGenerateAndSetTitle).toHaveBeenCalledWith(
@@ -1041,6 +1054,32 @@ describe('orchestrator-agent handleMessage', () => {
       // Workflow is still dispatched
       expect(mockValidateAndResolveIsolation).toHaveBeenCalled();
     });
+
+    test('dispatches workflow when command body arrives after /invoke-workflow detection', async () => {
+      mockListCodebases.mockResolvedValue([mockCodebase]);
+      mockDiscoverWorkflows.mockResolvedValue({ workflows: testWorkflows, errors: [] });
+      mockFindWorkflow.mockImplementation(
+        (name: string, workflows: readonly WorkflowDefinition[]) =>
+          workflows.find(w => w.name === name)
+      );
+
+      mockClient.sendQuery.mockImplementation(async function* () {
+        yield { type: 'assistant', content: '/invoke-workflow ' };
+        yield { type: 'assistant', content: 'fix-bug ' };
+        yield { type: 'assistant', content: '--project test-project' };
+        yield { type: 'result', sessionId: 'session-id' };
+      });
+
+      await handleMessage(platform, 'chat-456', 'fix the bug');
+
+      expect(
+        platform.sendMessage.mock.calls.some(
+          ([id, content]) =>
+            id === 'chat-456' && typeof content === 'string' && content.includes('/invoke-workflow')
+        )
+      ).toBe(false);
+      expect(mockValidateAndResolveIsolation).toHaveBeenCalled();
+    });
   });
 
   // ─── Batch Mode ────────────────────────────────────────────────────────
@@ -1174,6 +1213,26 @@ describe('orchestrator-agent handleMessage', () => {
       await handleMessage(platform, 'chat-456', 'fix the bug');
 
       expect(mockValidateAndResolveIsolation).toHaveBeenCalled();
+    });
+
+    test('batch mode dispatches workflow when command body arrives after detection', async () => {
+      platform.getStreamingMode.mockReturnValue('batch');
+      mockClient.sendQuery.mockImplementation(async function* () {
+        yield { type: 'assistant', content: '/invoke-workflow ' };
+        yield { type: 'assistant', content: 'fix-bug ' };
+        yield { type: 'assistant', content: '--project test-project' };
+        yield { type: 'result', sessionId: 'session-id' };
+      });
+
+      await handleMessage(platform, 'chat-456', 'fix the bug');
+
+      expect(mockValidateAndResolveIsolation).toHaveBeenCalled();
+      expect(
+        platform.sendMessage.mock.calls.some(
+          ([id, content]) =>
+            id === 'chat-456' && typeof content === 'string' && content.includes('/invoke-workflow')
+        )
+      ).toBe(false);
     });
 
     test('passes synthesizedPrompt to workflow dispatch instead of original message', async () => {

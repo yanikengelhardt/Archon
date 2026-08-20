@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
-import { categorizeCommands } from '@/lib/command-categories';
+import { groupCommandsBySource } from '@/lib/command-groups';
 import type { CodebaseSkill, CommandEntry } from '@/lib/api';
 
 interface NodeLibraryProps {
@@ -116,19 +116,19 @@ function groupSkillsByCategory(
 export function NodeLibrary({ commands, skills, isLoading }: NodeLibraryProps): React.ReactElement {
   const [search, setSearch] = useState('');
 
-  const categories = useMemo(() => categorizeCommands(commands), [commands]);
+  const groups = useMemo(() => groupCommandsBySource(commands), [commands]);
   const skillCategories = useMemo(() => groupSkillsByCategory(skills), [skills]);
 
-  const filteredCategories = useMemo(() => {
-    if (!search.trim()) return categories;
+  const filteredGroups = useMemo(() => {
+    if (!search.trim()) return groups;
     const term = search.toLowerCase();
-    return categories
-      .map(cat => ({
-        ...cat,
-        commands: cat.commands.filter(cmd => cmd.name.toLowerCase().includes(term)),
+    return groups
+      .map(group => ({
+        ...group,
+        commands: group.commands.filter(cmd => cmd.name.toLowerCase().includes(term)),
       }))
-      .filter(cat => cat.commands.length > 0);
-  }, [categories, search]);
+      .filter(group => group.commands.length > 0);
+  }, [groups, search]);
 
   const filteredSkillCategories = useMemo(() => {
     if (!search.trim()) return skillCategories;
@@ -202,14 +202,14 @@ export function NodeLibrary({ commands, skills, isLoading }: NodeLibraryProps): 
             ))}
 
             {/* Command categories */}
-            {filteredCategories.map(category => (
+            {filteredGroups.map(group => (
               <CollapsibleSection
-                key={category.name}
-                title={category.name}
-                count={category.commands.length}
-                defaultOpen={category.name === 'Project'}
+                key={group.source}
+                title={group.label}
+                count={group.commands.length}
+                defaultOpen={group.source === 'project'}
               >
-                {category.commands.map(cmd => (
+                {group.commands.map(cmd => (
                   <DraggableItem
                     key={cmd.name}
                     type="command"
@@ -220,7 +220,7 @@ export function NodeLibrary({ commands, skills, isLoading }: NodeLibraryProps): 
               </CollapsibleSection>
             ))}
 
-            {filteredCategories.length === 0 &&
+            {filteredGroups.length === 0 &&
               filteredSkillCategories.length === 0 &&
               !showQuickNodes && (
                 <p className="text-xs text-text-tertiary px-2 py-4 text-center">

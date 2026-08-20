@@ -122,3 +122,5 @@ test-results/
 .archon/ralph/
 
 docs/superpowers/
+# Stray run logs from a mis-threaded logDir argument (see #2299) — never committed.
+main/

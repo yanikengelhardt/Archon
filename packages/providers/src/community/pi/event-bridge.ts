@@ -168,6 +168,9 @@ export function buildResultChunk(messages: readonly unknown[]): MessageChunk {
     tokens,
     ...(tokens.cost !== undefined ? { cost: tokens.cost } : {}),
     ...(last.stopReason ? { stopReason: last.stopReason } : {}),
+    ...(typeof last.responseModel === 'string' && last.responseModel.length > 0
+      ? { resolvedModel: { id: last.responseModel } }
+      : {}),
     ...(isError
       ? {
           isError: true,
@@ -248,6 +251,7 @@ export function mapPiEvent(event: AgentSessionEvent): MessageChunk[] {
         toolName: event.toolName,
         toolOutput: serializeToolResult(event.result),
         toolCallId: event.toolCallId,
+        toolOutcome: event.isError ? 'error' : 'success',
       });
       return chunks;
     }
@@ -299,8 +303,30 @@ export async function* bridgeSession(
   uiBridge?: BridgeNotifier
 ): AsyncGenerator<MessageChunk> {
   const queue = new AsyncQueue<BridgeQueueItem>();
+
+  // ── Assistant-chunk coalescing (#1814) ─────────────────────────────────
+  // Pi streams assistant text as many tiny `text_delta` events (often a few
+  // characters each). Downstream, the DAG executor treats every `assistant`
+  // chunk as a discrete message block — batch mode joins them with "\n\n",
+  // stream mode sends each one separately. That is correct for Claude/Codex,
+  // which each yield one chunk per *complete* text block, but it shatters Pi's
+  // char-level deltas into fragmented "С\n\nег\n\nод\n\nня" output. We coalesce
+  // consecutive deltas into one block-level chunk and flush it only at natural
+  // boundaries (turn start, text-block end, before any non-assistant chunk, and
+  // at end-of-stream/error), so Pi matches the one-chunk-per-block contract the
+  // executor already expects. `currentTurnText`/`assistantBuffer` still
+  // accumulate every delta, so streaming-tail detection and structured-output
+  // buffering are unaffected.
+  let pendingAssistant = '';
+  const flushPendingAssistant = (): void => {
+    if (pendingAssistant.length === 0) return;
+    queue.push({ kind: 'chunk', chunk: { type: 'assistant', content: pendingAssistant } });
+    pendingAssistant = '';
+  };
+
   uiBridge?.setEmitter(chunk => {
-    // Buffered assistant text must not be overtaken by a notify chunk.
+    // A notify() chunk (flush:true) must surface immediately and in order, so
+    // drain any buffered assistant text ahead of it.
     flushPendingAssistant();
     queue.push({ kind: 'chunk', chunk });
   });
@@ -319,25 +345,10 @@ export async function* bridgeSession(
   // processes the result.
   let finalAssembledText: string | undefined;
 
-  // Coalesce Pi's token-sized text_delta events into ONE assistant chunk per
-  // completed assistant message. Every other provider (Claude, Codex) emits
-  // message-level assistant chunks, and batch consumers rely on that contract:
-  // the orchestrator's filterToolIndicators joins assistant chunks with
-  // '\n\n---\n\n', so raw deltas would render with separators mid-word on
-  // Slack/GitHub/CLI. Deltas still feed currentTurnText/assistantBuffer
-  // (tail-completion and structured-output logic is delta-based and unchanged).
-  let pendingAssistant = '';
-  const flushPendingAssistant = (): void => {
-    if (pendingAssistant.length === 0) return;
-    queue.push({ kind: 'chunk', chunk: { type: 'assistant', content: pendingAssistant } });
-    pendingAssistant = '';
-  };
-
   const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
     try {
       if (event.type === 'turn_start') {
-        // A new turn implies the previous assistant message is complete even
-        // if no message_end was observed — flush so messages never merge.
+        // A new turn begins: the previous turn's text block is complete.
         flushPendingAssistant();
         currentTurnText = '';
       }
@@ -349,20 +360,23 @@ export async function* bridgeSession(
       }
       for (const chunk of mapPiEvent(event)) {
         if (chunk.type === 'assistant') {
+          // Coalesce char-level deltas; hold them until a boundary flush so the
+          // executor receives one block-level chunk instead of dozens of tiny
+          // ones. The accumulators below still observe every delta.
           currentTurnText += chunk.content;
-          if (wantsStructured) {
-            assistantBuffer += chunk.content;
-          }
+          if (wantsStructured) assistantBuffer += chunk.content;
           pendingAssistant += chunk.content;
-          continue;
-        }
-        // Preserve ordering: any non-text chunk (tool, tool_result, system,
-        // result) must not overtake buffered assistant text. Thinking deltas
-        // keep streaming through — batch consumers drop them anyway.
-        if (chunk.type !== 'thinking') {
+        } else {
+          // Any non-assistant chunk (tool, tool_result, system, result) is a
+          // boundary: drain buffered text first so ordering is preserved.
           flushPendingAssistant();
+          queue.push({ kind: 'chunk', chunk });
         }
-        queue.push({ kind: 'chunk', chunk });
+      }
+      // A completed text block flushes promptly so stream-mode consumers see
+      // each block as it finishes rather than waiting for the terminal result.
+      if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_end') {
+        flushPendingAssistant();
       }
     } catch (err) {
       queue.push({ kind: 'error', error: err as Error });
@@ -397,15 +411,24 @@ export async function* bridgeSession(
   try {
     for await (const item of queue) {
       if (item.kind === 'done') {
-        // Safety net: a session ending without a message_end/agent_end for the
-        // last assistant message must not swallow buffered text.
+        // Defensive: agent_end normally flushes buffered text via its result
+        // chunk before `done` arrives, but surface any stranded text rather
+        // than dropping it.
         if (pendingAssistant.length > 0) {
           yield { type: 'assistant', content: pendingAssistant };
           pendingAssistant = '';
         }
         return;
       }
-      if (item.kind === 'error') throw item.error;
+      if (item.kind === 'error') {
+        // Preserve partial output: emit whatever text was buffered before the
+        // failure so it still reaches the user instead of being discarded.
+        if (pendingAssistant.length > 0) {
+          yield { type: 'assistant', content: pendingAssistant };
+          pendingAssistant = '';
+        }
+        throw item.error;
+      }
       // Annotate the terminal result chunk with Pi's session UUID so Archon's
       // orchestrator can pass it back as `resumeSessionId` on the next call.
       // Pi's session.sessionId is always a UUID (even for in-memory); we emit

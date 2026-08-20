@@ -3,6 +3,11 @@ import { createMockLogger } from '../test/mocks/logger';
 import { MockPlatformAdapter } from '../test/mocks/platform';
 import type { Conversation, Codebase } from '../types';
 import type { IsolationEnvironmentRow } from '@archon/isolation';
+// Type-only imports are erased at runtime, so these do not load './orchestrator'
+// (or the workflow engine) before the mock.module() calls below take effect.
+import type { WorkflowRoutingContext } from './orchestrator';
+import type { WorkflowDefinition } from '@archon/workflows/schemas/workflow';
+import { makeTestComposedWorkflow, makeTestWorkflow } from '@archon/workflows/test-utils';
 
 // ─── Mock setup (BEFORE importing module under test) ─────────────────────────
 
@@ -18,19 +23,33 @@ mock.module('@archon/paths', () => ({
   getProjectWorktreesPath: mock(
     (owner: string, repo: string) => `/home/test/.archon/workspaces/${owner}/${repo}/worktrees`
   ),
+  // Required by @archon/git worktree.ts (shared identity resolution, #2227).
+  parseOwnerRepo: mock((name: string) => {
+    const parts = name.split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+    return { owner: parts[0], repo: parts[1] };
+  }),
+  resolveRepoProjectIdentity: mock((name: string, cwd: string) => {
+    const parts = name.split('/');
+    if (parts.length === 2 && parts[0] && parts[1]) return { owner: parts[0], repo: parts[1] };
+    const repo = cwd.split('/').filter(Boolean).pop() ?? '';
+    return repo === '' || repo === '.' || repo === '..' ? null : { owner: '_local', repo };
+  }),
 }));
 
 // DB mocks
 const mockUpdateConversation = mock(() => Promise.resolve());
+const mockGetOrCreateConversation = mock((): Promise<Conversation | null> => Promise.resolve(null));
 mock.module('../db/conversations', () => ({
-  getOrCreateConversation: mock(() => Promise.resolve(null)),
+  getOrCreateConversation: mockGetOrCreateConversation,
   getConversationByPlatformId: mock(() => Promise.resolve(null)),
   updateConversation: mockUpdateConversation,
   touchConversation: mock(() => Promise.resolve()),
 }));
 
+const mockGetCodebase = mock((): Promise<Codebase | null> => Promise.resolve(null));
 mock.module('../db/codebases', () => ({
-  getCodebase: mock(() => Promise.resolve(null)),
+  getCodebase: mockGetCodebase,
   listCodebases: mock(() => Promise.resolve([])),
   createCodebase: mock(() => Promise.resolve({ id: 'new-codebase-id' })),
 }));
@@ -72,9 +91,10 @@ mock.module('@archon/providers', () => ({
   PI_AMBIENT_VENDORS: ['amazon-bedrock', 'google-vertex'],
 }));
 
+const mockCreateWorkflowRun = mock(() => Promise.resolve({ id: 'run-1' }));
 mock.module('../workflows/store-adapter', () => ({
   createWorkflowDeps: mock(() => ({
-    store: {},
+    store: { createWorkflowRun: mockCreateWorkflowRun },
     getAgentProvider: () => ({}),
     loadConfig: async () => ({}),
   })),
@@ -116,6 +136,7 @@ mock.module('@archon/isolation', () => ({
   },
   configureIsolation: mock(() => undefined),
   getIsolationProvider: mock(() => ({})),
+  classifyIsolationError: (err: Error) => err.message,
 }));
 
 mock.module('./prompt-builder', () => ({
@@ -130,8 +151,11 @@ mock.module('../utils/error-formatter', () => ({
 mock.module('@archon/workflows/workflow-discovery', () => ({
   discoverWorkflowsWithConfig: mock(() => Promise.resolve({ workflows: [], errors: [] })),
 }));
+// Resolves to a paused result so dispatchBackgroundWorkflow's fire-and-forget
+// tail is a no-op (no result card is surfaced to the parent conversation).
+const mockExecuteWorkflow = mock(() => Promise.resolve({ paused: true }));
 mock.module('@archon/workflows/executor', () => ({
-  executeWorkflow: mock(() => Promise.resolve()),
+  executeWorkflow: mockExecuteWorkflow,
 }));
 mock.module('@archon/workflows/router', () => ({
   findWorkflow: mock(() => undefined),
@@ -157,7 +181,7 @@ mock.module('../services/title-generator', () => ({
 
 // ─── Import module under test AFTER all mocks ────────────────────────────────
 
-const { validateAndResolveIsolation } = await import('./orchestrator');
+const { validateAndResolveIsolation, dispatchBackgroundWorkflow } = await import('./orchestrator');
 
 // ─── Test helpers ────────────────────────────────────────────────────────────
 
@@ -292,5 +316,166 @@ describe('validateAndResolveIsolation', () => {
       codebase: { defaultBranch?: string | null };
     };
     expect(request.codebase.defaultBranch).toBeNull();
+  });
+});
+
+describe('dispatchBackgroundWorkflow', () => {
+  let platform: MockPlatformAdapter;
+
+  function makeWorkflow(overrides?: Partial<WorkflowDefinition>): WorkflowDefinition {
+    return {
+      name: 'bg-workflow',
+      description: 'background dispatch test workflow',
+      nodes: [],
+      ...overrides,
+    } as WorkflowDefinition;
+  }
+
+  function makeRoutingCtx(overrides?: Partial<WorkflowRoutingContext>): WorkflowRoutingContext {
+    return {
+      platform,
+      conversationId: 'parent-conv',
+      cwd: '/parent/cwd',
+      originalMessage: 'run it',
+      conversationDbId: 'parent-db-id',
+      codebaseId: 'cb-1',
+      availableWorkflows: [],
+      ...overrides,
+    };
+  }
+
+  /** Let the fire-and-forget execution tail settle before the test ends. */
+  async function flushBackgroundExecution(): Promise<void> {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+
+  beforeEach(() => {
+    platform = new MockPlatformAdapter();
+    mockResolve.mockClear();
+    mockUpdateConversation.mockClear();
+    mockCreateWorkflowRun.mockClear();
+    mockLogger.info.mockClear();
+    mockGetOrCreateConversation.mockResolvedValue(
+      makeConversation({ id: 'worker-conv-1', platform_conversation_id: 'web-worker-1' })
+    );
+    mockGetCodebase.mockResolvedValue(makeCodebase());
+  });
+
+  test('refuses a composed approval gate before creating anything (#1764)', async () => {
+    // Enforced HERE rather than at the callers, because there are two entrypoints that
+    // background a run — the console's default dispatch and the `manage_run` tool's
+    // startWorkflow, which reaches every platform with native tools. A rule enforced per
+    // caller fails open the moment a third appears.
+    const block = makeTestWorkflow({
+      name: 'gate-blk',
+      nodes: [{ id: 'gate', approval: { message: 'Approve?' } }],
+    });
+    const parent = makeTestComposedWorkflow(
+      [block, makeTestWorkflow({ name: 'bg-parent', nodes: [{ id: 'inc', include: 'gate-blk' }] })],
+      'bg-parent'
+    );
+
+    await expect(dispatchBackgroundWorkflow(makeRoutingCtx(), parent)).rejects.toThrow(
+      /composes 'gate-blk'.*approval gate/s
+    );
+
+    // Refused before any side effect — no worker conversation, no run row.
+    expect(mockGetOrCreateConversation).not.toHaveBeenCalled();
+    expect(mockCreateWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  test('a workflow with only its OWN approval gate still dispatches', async () => {
+    // The rule is about a gate written in another file, not about gates.
+    const own = makeTestWorkflow({
+      name: 'own-gate',
+      nodes: [{ id: 'gate', approval: { message: 'Approve?' } }],
+      worktree: { enabled: false },
+    });
+
+    await dispatchBackgroundWorkflow(makeRoutingCtx(), makeTestComposedWorkflow([own], 'own-gate'));
+    expect(mockGetOrCreateConversation).toHaveBeenCalled();
+    await flushBackgroundExecution();
+  });
+
+  test('worktree.enabled: false skips isolation and runs in the parent cwd', async () => {
+    const workflow = makeWorkflow({ worktree: { enabled: false } });
+
+    await dispatchBackgroundWorkflow(makeRoutingCtx(), workflow);
+
+    // Policy opt-out: no isolation resolution attempted at all.
+    expect(mockResolve).not.toHaveBeenCalled();
+    // The run executes in the parent conversation's cwd (live checkout).
+    expect(mockCreateWorkflowRun).toHaveBeenCalledTimes(1);
+    const runRow = mockCreateWorkflowRun.mock.calls[0]?.[0] as unknown as {
+      working_path: string;
+    };
+    expect(runRow.working_path).toBe('/parent/cwd');
+    // Operators can distinguish live-checkout runs from worktree runs in logs.
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      { workflowName: 'bg-workflow', conversationId: 'parent-conv', codebaseId: 'cb-1' },
+      'workflow.worktree_disabled_by_policy'
+    );
+
+    await flushBackgroundExecution();
+  });
+
+  // This path PRE-CREATES the run row (so the console can fetch it immediately), which
+  // means the executor's own `if (!workflowRun)` stamp never fires here — the values
+  // have to be written onto the row below. It is also the console's default path for
+  // non-interactive workflows, so losing the stamp would silently start every
+  // console-supplied run with its inputs missing rather than failing (#2554).
+  test('stamps caller-supplied declared inputs onto the pre-created run row', async () => {
+    const workflow = makeWorkflow({ worktree: { enabled: false } });
+
+    await dispatchBackgroundWorkflow(makeRoutingCtx({ inputs: { diff: 'D1' } }), workflow);
+
+    expect(mockCreateWorkflowRun).toHaveBeenCalledTimes(1);
+    const runRow = mockCreateWorkflowRun.mock.calls[0]?.[0] as unknown as {
+      metadata?: Record<string, unknown>;
+    };
+    expect(runRow.metadata?.inputs).toEqual({ diff: 'D1' });
+
+    await flushBackgroundExecution();
+  });
+
+  test('writes no inputs key on the pre-created row when none are supplied', async () => {
+    // Bare-run parity with the executor-level row: a run that supplied nothing must
+    // look exactly as it did before #2554.
+    const workflow = makeWorkflow({ worktree: { enabled: false } });
+
+    await dispatchBackgroundWorkflow(makeRoutingCtx(), workflow);
+
+    const runRow = mockCreateWorkflowRun.mock.calls[0]?.[0] as unknown as {
+      metadata?: Record<string, unknown>;
+    };
+    expect(runRow.metadata).not.toHaveProperty('inputs');
+
+    await flushBackgroundExecution();
+  });
+
+  test('default policy still resolves isolation for the worker', async () => {
+    const workflow = makeWorkflow();
+    mockResolve.mockResolvedValueOnce({
+      status: 'resolved',
+      env: makeEnvRow({ working_path: '/worktrees/bg-1', branch_name: 'bg-1' }),
+      cwd: '/worktrees/bg-1',
+      method: { type: 'created' },
+    });
+
+    await dispatchBackgroundWorkflow(makeRoutingCtx(), workflow);
+
+    // Without an explicit opt-out, the worker gets its own isolation environment.
+    expect(mockResolve).toHaveBeenCalledTimes(1);
+    expect(mockCreateWorkflowRun).toHaveBeenCalledTimes(1);
+    const runRow = mockCreateWorkflowRun.mock.calls[0]?.[0] as unknown as {
+      working_path: string;
+    };
+    expect(runRow.working_path).toBe('/worktrees/bg-1');
+    expect(mockLogger.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'workflow.worktree_disabled_by_policy'
+    );
+
+    await flushBackgroundExecution();
   });
 });

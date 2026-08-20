@@ -22,7 +22,7 @@ Each line is a structured event. The discriminator is the `type` field. Values (
 
 > **Loop iterations and per-attempt retry events are NOT in the JSONL file.** They go through the workflow event emitter (WebSocket / `workflow_events` DB table) under `loop_iteration_started` / `loop_iteration_completed` etc. To see them, query the DB or the Web UI dashboard — not the JSONL log.
 
-Find the run ID from `archon workflow status` (most recent run). Then:
+Find the run ID from `archon workflow runs --status failed` (or `archon workflow runs` for the most recent run of any status; `workflow status` only shows active runs). Then:
 
 ```bash
 # Last assistant message (what the AI said before failure)
@@ -95,14 +95,15 @@ Three possibilities:
 
 ### Workflow fails mid-way; how do I resume?
 
-Auto-resume is default — just re-invoke the same workflow at the same cwd:
+Find the failed run, then resume it explicitly:
 
 ```bash
-archon workflow run my-workflow "original message"
-# → "Resuming workflow — skipping N already-completed node(s)"
+archon workflow runs
+archon workflow get <run-id>
+archon workflow resume <run-id>
 ```
 
-Use `--resume` only when you want to force-reuse the same worktree from a specific failed run. Use `archon workflow resume <run-id>` to force a specific run ID.
+`archon workflow resume <run-id>` targets that exact run and reuses its recorded working path/worktree. As a convenience, `archon workflow run my-workflow --resume` resumes the most recent resumable run for that workflow at the invocation cwd. A bare `archon workflow run my-workflow` starts a fresh run.
 
 **Caveat:** AI session context from prior nodes is NOT restored on resume. If a `context: shared` node depended on in-session memory, re-running it will have fresh context. Artifact-based handoff survives; in-context memory does not.
 
@@ -162,7 +163,10 @@ archon workflow get <run-id> --verbose --json | jq '.events[]'
 # Recent runs for this project, all statuses ("did the review pass?")
 archon workflow runs --json | jq '.runs[]'
 
-# All active runs as JSON (running / paused / recently finished, depending on retention)
+# Recent runs of any status (find a failed run's ID)
+archon workflow runs --status failed --limit 10
+
+# All active runs as JSON (running / paused only — finished runs never appear here)
 archon workflow status --json | jq '.runs[]'
 
 # Human-readable status of any active runs

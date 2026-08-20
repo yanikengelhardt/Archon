@@ -9,6 +9,7 @@
  * Read operations also throw on error — callers own the degradation policy.
  */
 import { pool, getDialect, getDatabaseType } from './connection';
+import type { QueryResult } from './adapters/types';
 import type { WorkflowEventRow } from '../schemas/workflow-event';
 import { createLogger } from '@archon/paths';
 
@@ -53,31 +54,58 @@ function parseEventRow(row: WorkflowEventRow): WorkflowEventRow {
   }
 }
 
-/**
- * Create a workflow event. Fire-and-forget - never throws.
- */
-export async function createWorkflowEvent(data: {
+/** The column payload for a single workflow-event row. */
+export interface WorkflowEventInput {
   workflow_run_id: string;
   event_type: string;
   step_index?: number;
   step_name?: string;
   data?: Record<string, unknown>;
-}): Promise<void> {
+}
+
+/**
+ * A query function scoped to a specific connection — either the module-level
+ * `pool` or a transaction-scoped query from `IDatabase.withTransaction`. The row
+ * type is unused (INSERT returns none), so it is fixed to `unknown` rather than
+ * generic, which lets a generic transaction query be passed directly.
+ */
+type EventInsertQuery = (sql: string, params?: unknown[]) => Promise<QueryResult<unknown>>;
+
+/**
+ * Insert one workflow-event row via `query` and THROW on failure. This is the
+ * single source of truth for the event columns and dialect UUID; the
+ * fire-and-forget createWorkflowEvent wraps it in try/catch, while callers that
+ * need the write to be atomic with another mutation (the approval-gate CAS in
+ * db/workflows.ts, #2146) pass a transaction-scoped query so a failed event
+ * write rolls back the enclosing UPDATE instead of stranding a resolved gate
+ * with no audit trail.
+ */
+export async function insertWorkflowEvent(
+  query: EventInsertQuery,
+  data: WorkflowEventInput
+): Promise<void> {
+  const dialect = getDialect();
+  const id = dialect.generateUuid();
+  await query(
+    `INSERT INTO remote_agent_workflow_events (id, workflow_run_id, event_type, step_index, step_name, data)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [
+      id,
+      data.workflow_run_id,
+      data.event_type,
+      data.step_index ?? null,
+      data.step_name ?? null,
+      JSON.stringify(data.data ?? {}),
+    ]
+  );
+}
+
+/**
+ * Create a workflow event. Fire-and-forget - never throws.
+ */
+export async function createWorkflowEvent(data: WorkflowEventInput): Promise<void> {
   try {
-    const dialect = getDialect();
-    const id = dialect.generateUuid();
-    await pool.query(
-      `INSERT INTO remote_agent_workflow_events (id, workflow_run_id, event_type, step_index, step_name, data)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        id,
-        data.workflow_run_id,
-        data.event_type,
-        data.step_index ?? null,
-        data.step_name ?? null,
-        JSON.stringify(data.data ?? {}),
-      ]
-    );
+    await insertWorkflowEvent((sql, params) => pool.query(sql, params), data);
   } catch (error) {
     getLog().error(
       { err: error as Error, eventType: data.event_type, runId: data.workflow_run_id },
@@ -88,14 +116,15 @@ export async function createWorkflowEvent(data: {
 }
 
 /**
- * List all events for a workflow run, ordered by creation time.
+ * List all events for a workflow run in lifecycle order. `event_order` is
+ * allocated by the database, so it preserves insertion order when timestamps tie.
  */
 export async function listWorkflowEvents(workflowRunId: string): Promise<WorkflowEventRow[]> {
   try {
     const result = await pool.query<WorkflowEventRow>(
       `SELECT * FROM remote_agent_workflow_events
        WHERE workflow_run_id = $1
-       ORDER BY created_at ASC`,
+       ORDER BY created_at ASC, COALESCE(event_order, 0) ASC, id ASC`,
       [workflowRunId]
     );
     return [...result.rows].map(row => ({
@@ -120,7 +149,7 @@ export async function listRecentEvents(
       const result = await pool.query<WorkflowEventRow>(
         `SELECT * FROM remote_agent_workflow_events
          WHERE workflow_run_id = $1 AND created_at > $2
-         ORDER BY created_at ASC`,
+         ORDER BY created_at ASC, COALESCE(event_order, 0) ASC, id ASC`,
         [workflowRunId, since.toISOString()]
       );
       return [...result.rows].map(row => ({
@@ -171,7 +200,7 @@ export async function listWorkflowEventsSince(
     const result = await pool.query<WorkflowEventRow>(
       `SELECT * FROM remote_agent_workflow_events
        WHERE created_at >= $1${typeClause}
-       ORDER BY created_at ASC
+       ORDER BY created_at ASC, COALESCE(event_order, 0) ASC, id ASC
        LIMIT ${limitParam}`,
       params
     );
@@ -185,23 +214,42 @@ export async function listWorkflowEventsSince(
 }
 
 /**
- * Return a map of nodeId → output for all node_completed events in a workflow run.
- * Used by the DAG executor to restore node outputs when resuming a failed run.
+ * Return completed node outputs and cumulative usage (tokens AND cost) for a workflow
+ * run. Used by the DAG executor to restore state when resuming a failed run.
  * Throws on DB error — caller owns the degradation policy.
+ *
+ * Both usage axes are summed from `node_completed` rows only, and only from rows that are
+ * not marked `data.aggregate`. Two distinct duplication hazards:
+ *
+ * - `node_skipped_prior_success` rows replay a node an earlier pass already counted, so
+ *   counting them would multiply that node's usage by the number of resume passes.
+ * - `aggregate: true` rows are derived from other rows already in this log — a
+ *   `loop_group`'s roll-up restates the `cost_usd` its own `<groupId>.<nodeId>` body rows
+ *   carry, so summing both counts that group twice (#2469).
+ *
+ * Rows written before the `aggregate` marker existed carry no flag, so a run that
+ * completed a loop_group under an older build and is resumed under this one can still
+ * double-count its cost. Bounded and self-clearing: only cost is affected (the roll-up
+ * never carried `tokens`), and only until those runs reach a terminal state.
  */
-export async function getCompletedDagNodeOutputs(
-  workflowRunId: string
-): Promise<Map<string, string>> {
+export async function getDagResumeSnapshot(workflowRunId: string): Promise<{
+  completedNodeOutputs: Map<string, string>;
+  tokens: { input: number; output: number };
+  costUsd: number;
+}> {
   const result = await pool.query<{
     step_name: string | null;
+    event_type: 'node_completed' | 'node_skipped_prior_success';
     data: string | Record<string, unknown>;
   }>(
-    `SELECT step_name, data FROM remote_agent_workflow_events
+    `SELECT step_name, event_type, data FROM remote_agent_workflow_events
      WHERE workflow_run_id = $1 AND event_type IN ('node_completed', 'node_skipped_prior_success')
-     ORDER BY created_at ASC`,
+     ORDER BY created_at ASC, COALESCE(event_order, 0) ASC, id ASC`,
     [workflowRunId]
   );
-  const outputs = new Map<string, string>();
+  const completedNodeOutputs = new Map<string, string>();
+  const tokens = { input: 0, output: 0 };
+  let costUsd = 0;
   for (const row of result.rows) {
     if (!row.step_name) continue;
     let data: Record<string, unknown>;
@@ -215,8 +263,45 @@ export async function getCompletedDagNodeOutputs(
       continue;
     }
     if (typeof data.node_output === 'string') {
-      outputs.set(row.step_name, data.node_output);
+      completedNodeOutputs.set(row.step_name, data.node_output);
+    }
+    // A derived row restates usage that other rows in this same log already carry.
+    if (data.aggregate === true) continue;
+    if (row.event_type === 'node_completed' && data.tokens !== undefined) {
+      const eventTokens = data.tokens;
+      if (
+        typeof eventTokens === 'object' &&
+        eventTokens !== null &&
+        'input' in eventTokens &&
+        'output' in eventTokens &&
+        typeof eventTokens.input === 'number' &&
+        typeof eventTokens.output === 'number' &&
+        Number.isFinite(eventTokens.input) &&
+        Number.isFinite(eventTokens.output)
+      ) {
+        tokens.input += eventTokens.input;
+        tokens.output += eventTokens.output;
+      } else {
+        getLog().warn(
+          { runId: workflowRunId, stepName: row.step_name, tokens: eventTokens },
+          'db.workflow_dag_node_tokens_invalid_ignored'
+        );
+      }
+    }
+    if (row.event_type === 'node_completed' && data.cost_usd !== undefined) {
+      const eventCost = data.cost_usd;
+      // Same guard shape as tokens: a non-finite value from a provider must not
+      // silently poison the total (NaN > 0 is false, which would drop the run's
+      // cost from the persisted metadata with no trace).
+      if (typeof eventCost === 'number' && Number.isFinite(eventCost)) {
+        costUsd += eventCost;
+      } else {
+        getLog().warn(
+          { runId: workflowRunId, stepName: row.step_name, costUsd: eventCost },
+          'db.workflow_dag_node_cost_invalid_ignored'
+        );
+      }
     }
   }
-  return outputs;
+  return { completedNodeOutputs, tokens, costUsd };
 }

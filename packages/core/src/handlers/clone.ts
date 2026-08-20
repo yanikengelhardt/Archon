@@ -8,6 +8,7 @@ import { join, basename, resolve } from 'path';
 import * as codebaseDb from '../db/codebases';
 import { sanitizeError } from '../utils/credential-sanitizer';
 import { execFileAsync } from '@archon/git';
+import { findCodebaseForCheckoutPath } from '../services/codebase-checkout-resolver';
 import {
   expandTilde,
   getCommandFolderSearchPaths,
@@ -382,7 +383,11 @@ export async function cloneRepository(repoUrl: string): Promise<RegisterResult> 
   }
 
   try {
-    await execFileAsync('git', ['clone', cloneUrl, targetPath]);
+    // GIT_TERMINAL_PROMPT=0 turns any missing-creds scenario into an
+    // immediate, readable error instead of a hung stdin credential prompt.
+    await execFileAsync('git', ['clone', cloneUrl, targetPath], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
   } catch (error) {
     const safeErr = sanitizeError(error as Error);
     throw new Error(`Failed to clone repository: ${safeErr.message}`);
@@ -402,8 +407,16 @@ export async function cloneRepository(repoUrl: string): Promise<RegisterResult> 
  * Git metadata is used when present, but plain folders are valid for direct chat.
  */
 export async function registerRepository(localPath: string): Promise<RegisterResult> {
-  // Check if already registered by path before doing any git-specific probing.
-  const existing = await codebaseDb.findCodebaseByDefaultCwd(localPath);
+  // Validate path exists and is a git repo
+  try {
+    await execFileAsync('git', ['-C', localPath, 'rev-parse', '--git-dir']);
+  } catch (error) {
+    throw new Error(`Path is not a git repository: ${localPath} (${(error as Error).message})`);
+  }
+
+  // Git's physical common directory proves linked-checkout ownership without
+  // conflating separate clones, remotes, names, or branches (#1192).
+  const existing = await findCodebaseForCheckoutPath(localPath);
   if (existing) {
     return {
       codebaseId: existing.id,
@@ -414,12 +427,6 @@ export async function registerRepository(localPath: string): Promise<RegisterRes
       commandCount: 0,
       alreadyExisted: true,
     };
-  }
-
-  try {
-    await execFileAsync('git', ['-C', localPath, 'rev-parse', '--git-dir']);
-  } catch (_error) {
-    throw new Error('Path is not a git repository');
   }
 
   // Get remote URL (optional — local-only repos and plain folders may not have one)

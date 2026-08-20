@@ -49,8 +49,11 @@ import { createIsolationStore } from '../db/isolation-environments';
 import { toError } from '../utils/error';
 import { getCodebase } from '../db/codebases';
 import { executeWorkflow } from '@archon/workflows/executor';
+import { assertComposedGateDriveable } from '@archon/workflows/utils/workflow-requirements';
+import { SUBRUN_METADATA_KEYS } from '@archon/workflows/schemas/workflow-run';
 import type { WorkflowDefinition, WorkflowSource } from '@archon/workflows/schemas/workflow';
 import { createWorkflowDeps } from '../workflows/store-adapter';
+import { createChildWorktreeResolver } from '../workflows/child-isolation-resolver';
 import {
   cleanupToMakeRoom,
   getWorktreeStatusBreakdown,
@@ -283,6 +286,20 @@ export interface WorkflowRoutingContext {
    * to the privacy-safe "custom" treatment when not provided.
    */
   readonly source?: WorkflowSource;
+  /**
+   * Keys the engine dropped from the workflow's YAML (#2213). Forwarded to the
+   * executor so a background (web/console) run records them on the run like any
+   * other, independently of the chat notification.
+   */
+  readonly parseWarnings?: readonly string[];
+  /**
+   * Declared inputs supplied by the caller (#2554), already validated at the dispatch
+   * gate. This path PRE-CREATES the run row (so the UI can fetch it immediately), which
+   * means the executor's own row-creation branch never runs — the values are stamped on
+   * the pre-created row below, and also passed to `executeWorkflow` for the fallback
+   * path where pre-creation failed and the executor creates the row itself.
+   */
+  readonly inputs?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -300,6 +317,15 @@ export async function dispatchBackgroundWorkflow(
     prBranch?: string;
   }
 ): Promise<void> {
+  // 0. A backgrounded run cannot present an approval gate inline, and a gate that arrived
+  // through `include:` was written by someone looking at a different file (#1764). Checked
+  // HERE, in the one function that backgrounds a run, rather than at each caller — this has
+  // two entrypoints (the console's default dispatch and the `manage_run` tool's
+  // startWorkflow, which reaches every platform with native tools), and a rule enforced per
+  // caller is a rule that fails open the moment a third appears. Throws before the worker
+  // conversation exists, so a refusal leaves nothing behind.
+  assertComposedGateDriveable(workflow.nodes);
+
   // 1. Generate worker conversation ID
   const workerPlatformId = `web-worker-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
 
@@ -318,10 +344,15 @@ export async function dispatchBackgroundWorkflow(
     hidden: true,
   });
 
-  // 3. Resolve isolation for this worker (each background workflow gets its own worktree).
-  // Isolation failure is fatal — never run a workflow in a shared/parent worktree.
+  // 3. Resolve isolation for this worker. Unless the workflow explicitly opts out of
+  // worktrees, each background workflow gets its own worktree — and isolation failure
+  // is then fatal (never fall back to running in a shared/parent worktree).
   let workerCwd: string;
   let codebaseBaseBranch: string | undefined;
+  // Per-child isolation resolver (#2121 slice 2, PR-A): a `workflow:` node with
+  // `isolation: 'worktree'` gets its own worktree per child. Built for git-repo
+  // codebases only; undefined otherwise → the engine fails such a node fast.
+  let resolveChildIsolation: ReturnType<typeof createChildWorktreeResolver> | undefined;
   if (ctx.codebaseId) {
     const codebase = await getCodebase(ctx.codebaseId);
     if (!codebase) {
@@ -330,22 +361,45 @@ export async function dispatchBackgroundWorkflow(
       );
     }
     codebaseBaseBranch = codebase.default_branch?.trim() || undefined;
-    const result = await validateAndResolveIsolation(
-      workerConv,
-      codebase,
-      ctx.platform,
-      workerPlatformId,
-      { workflowType: 'thread', workflowId: workerPlatformId },
-      false,
-      ctx.userId
-    );
-    workerCwd = result.cwd;
-    await db.updateConversation(workerConv.id, { cwd: workerCwd }).catch((e: unknown) => {
-      getLog().warn(
-        { err: toError(e), workerPlatformId },
-        'orchestrator.worker_cwd_persist_failed'
+    if (codebase.kind !== 'folder') {
+      resolveChildIsolation = createChildWorktreeResolver({
+        codebaseId: codebase.id,
+        codebaseName: codebase.name,
+        canonicalRepoPath: codebase.default_cwd,
+        baseBranch: codebaseBaseBranch,
+        createdByPlatform: ctx.platform.getPlatformType(),
+        createdByUserId: ctx.userId,
+      });
+    }
+    if (workflow.worktree?.enabled === false) {
+      // Respect an explicit worktree opt-out: skip isolation and run in the parent's cwd.
+      getLog().info(
+        {
+          workflowName: workflow.name,
+          conversationId: ctx.conversationId,
+          codebaseId: ctx.codebaseId,
+        },
+        'workflow.worktree_disabled_by_policy'
       );
-    });
+      workerCwd = ctx.cwd;
+    } else {
+      const result = await validateAndResolveIsolation(
+        workerConv,
+        codebase,
+        ctx.platform,
+        workerPlatformId,
+        { workflowType: 'thread', workflowId: workerPlatformId },
+        false,
+        ctx.userId
+      );
+      workerCwd = result.cwd;
+      await db.updateConversation(workerConv.id, { cwd: workerCwd }).catch((e: unknown) => {
+        getLog().warn(
+          { err: toError(e), workerPlatformId },
+          'orchestrator.worker_cwd_persist_failed'
+        );
+      });
+    }
   } else {
     // No codebase — run in parent's cwd (no isolation needed for non-repo workflows)
     workerCwd = ctx.cwd;
@@ -397,7 +451,15 @@ export async function dispatchBackgroundWorkflow(
       codebase_id: ctx.codebaseId,
       user_message: ctx.originalMessage,
       working_path: workerCwd,
-      metadata: ctx.issueContext ? { github_context: ctx.issueContext } : {},
+      metadata: {
+        ...(ctx.issueContext ? { github_context: ctx.issueContext } : {}),
+        // Declared inputs supplied by this invocation (#2554). Stamped here because the
+        // executor only writes them when IT creates the row, and this path hands it a
+        // pre-created one.
+        ...(ctx.inputs && Object.keys(ctx.inputs).length > 0
+          ? { [SUBRUN_METADATA_KEYS.inputs]: { ...ctx.inputs } }
+          : {}),
+      },
       parent_conversation_id: ctx.conversationDbId,
       user_id: ctx.userId,
     });
@@ -427,7 +489,13 @@ export async function dispatchBackgroundWorkflow(
             preCreatedRun,
             userId: ctx.userId,
             source: ctx.source,
+            parseWarnings: ctx.parseWarnings,
             baseBranch: codebaseBaseBranch,
+            resolveChildIsolation,
+            // Only consumed when `preCreatedRun` is undefined (pre-creation failed and
+            // the executor creates the row itself); otherwise the row above already
+            // carries them.
+            inputs: ctx.inputs,
           }
         );
         // Surface workflow output to parent conversation as a result card

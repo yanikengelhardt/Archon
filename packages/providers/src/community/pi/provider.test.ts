@@ -3,7 +3,13 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
-import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
+import type {
+  AgentSessionEvent,
+  CreateAgentSessionOptions,
+  CreateAgentSessionResult,
+  ModelRegistry,
+} from '@earendil-works/pi-coding-agent';
+import type { Api, Model } from '@earendil-works/pi-ai';
 
 // Typed against the real registration shape (config: ProviderConfig) so the
 // mock runtime drifts loudly, not silently, if the SDK/type changes — same
@@ -35,7 +41,7 @@ type FakeEvent = AgentSessionEvent;
 let capturedListener: ((event: FakeEvent) => void) | undefined;
 
 const scriptedEvents: FakeEvent[] = [];
-const mockPrompt = mock(async () => {
+const mockPrompt = mock(async (_prompt: string): Promise<void> => {
   for (const ev of scriptedEvents) capturedListener?.(ev);
 });
 const mockAbort = mock(async () => undefined);
@@ -65,11 +71,20 @@ const mockSession = {
   sessionId: 'mock-session-uuid',
 };
 
-const mockCreateAgentSession = mock(async (_options?: unknown) => ({
-  session: mockSession,
-  extensionsResult: { extensions: [], errors: [], runtime: {} },
-  modelFallbackMessage: undefined,
-}));
+function createMockSessionResult(modelFallbackMessage?: string): CreateAgentSessionResult {
+  return {
+    session: mockSession,
+    extensionsResult: { extensions: [], errors: [], runtime: {} },
+    modelFallbackMessage,
+  } as unknown as CreateAgentSessionResult;
+}
+
+const mockCreateAgentSession = mock<
+  typeof import('@earendil-works/pi-coding-agent').createAgentSession
+>(
+  async (_options?: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> =>
+    createMockSessionResult()
+);
 
 // Per-test state backing the AuthStorage mock. `fileCreds` emulates what's
 // in ~/.pi/agent/auth.json; `runtimeOverrides` emulates env-var passthrough
@@ -85,7 +100,9 @@ const mockGetApiKey = mock(async (providerId: string): Promise<string | undefine
   if (runtimeOverrides[providerId]) return runtimeOverrides[providerId];
   const cred = fileCreds[providerId];
   if (cred?.type === 'api_key') return cred.key;
-  if (cred?.type === 'oauth') return 'oauth-access-token-stub';
+  // Real Anthropic subscription OAuth access tokens are `sk-ant-oat…` — keep
+  // the stub shape-accurate so token-shape-based detection is exercised.
+  if (cred?.type === 'oauth') return 'sk-ant-oat01-file-stub';
   return undefined;
 });
 const mockAuthCreate = mock(() => ({
@@ -93,24 +110,49 @@ const mockAuthCreate = mock(() => ({
   getApiKey: mockGetApiKey,
 }));
 
-const mockModelRegistryFind = mock((provider: string, modelId: string) => {
+function createMockModel(provider: string, modelId: string): Model<Api> {
+  return {
+    id: modelId,
+    provider,
+    name: `${provider}/${modelId}`,
+    api: 'openai-completions',
+    baseUrl: 'https://example.invalid',
+    reasoning: false,
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 8_192,
+  };
+}
+
+const mockModelRegistryFind = mock<ModelRegistry['find']>((provider, modelId) => {
   if (provider === 'nonexistent') return undefined;
-  return { id: modelId, provider, name: `${provider}/${modelId}` };
+  return createMockModel(provider, modelId);
 });
-const mockModelRegistryCreate = mock(() => ({
-  find: mockModelRegistryFind,
-}));
+type MockModelRegistry = Pick<ModelRegistry, 'find'> &
+  Partial<Pick<ModelRegistry, 'getError' | 'registerProvider'>>;
+type MockModelRegistryCreate = (
+  ...args: Parameters<typeof import('@earendil-works/pi-coding-agent').ModelRegistry.create>
+) => MockModelRegistry;
+const mockModelRegistryCreate = mock<MockModelRegistryCreate>(
+  (_authStorage): MockModelRegistry => ({
+    find: mockModelRegistryFind,
+  })
+);
 
 // SessionManager mocks. Each returns a tagged session-manager stub so tests
 // can assert whether resume resolved to an existing session or fell through
 // to a fresh one.
 const mockSessionCreate = mock((_cwd: string) => ({ __smKind: 'created' }));
 const mockSessionOpen = mock((_path: string) => ({ __smKind: 'opened' }));
+const mockSessionForkFrom = mock((_path: string, _cwd: string): { __smKind: string } => ({
+  __smKind: 'forked',
+}));
 const mockSessionList = mock(
   async (_cwd: string) => [] as { id: string; path: string; cwd: string }[]
 );
 
-const mockSettingsManagerDrainErrors = mock(() => []);
+const mockSettingsManagerDrainErrors = mock((): { scope: string; error: Error }[] => []);
 const mockSettingsManagerGetGlobalSettings = mock(() => ({}));
 const mockSettingsManagerGetProjectSettings = mock(() => ({}));
 const mockSettingsManagerCreate = mock(() => ({
@@ -160,6 +202,7 @@ mock.module('@earendil-works/pi-coding-agent', () => ({
   SessionManager: {
     create: mockSessionCreate,
     open: mockSessionOpen,
+    forkFrom: mockSessionForkFrom,
     list: mockSessionList,
   },
   SettingsManager: {
@@ -185,7 +228,7 @@ mock.module('@earendil-works/pi-coding-agent', () => ({
 }));
 
 // Import AFTER mocks are set — module resolution freezes the mocks.
-import { PiProvider } from './provider';
+import { ARCHON_PI_ANTHROPIC_OAUTH_SYSTEM_PROMPT, PiProvider } from './provider';
 import { PI_CAPABILITIES } from './capabilities';
 // Same module instance the provider dynamic-imports, so clearing this cache
 // resets the loader the provider reuses across calls (issue #1877).
@@ -211,6 +254,10 @@ async function consume(
 function resetScript(events: FakeEvent[]): void {
   scriptedEvents.length = 0;
   scriptedEvents.push(...events);
+}
+
+function readEnv(name: string): string | undefined {
+  return process.env[name];
 }
 
 // ─── Test suite ─────────────────────────────────────────────────────────
@@ -249,6 +296,7 @@ describe('PiProvider', () => {
     mockCreateLsTool.mockClear();
     mockSessionCreate.mockClear();
     mockSessionOpen.mockClear();
+    mockSessionForkFrom.mockClear();
     mockSessionList.mockClear();
     mockSessionList.mockImplementation(async () => []);
     mockSettingsManagerInMemory.mockClear();
@@ -292,14 +340,14 @@ describe('PiProvider', () => {
     delete process.env.PI_PACKAGE_DIR;
     expect(process.env.PI_PACKAGE_DIR).toBeUndefined();
     await consume(new PiProvider().sendQuery('hi', '/tmp'));
-    expect(process.env.PI_PACKAGE_DIR).toBeDefined();
-    expect(process.env.PI_PACKAGE_DIR).toContain('archon-pi-shim');
+    expect(readEnv('PI_PACKAGE_DIR')).toBeDefined();
+    expect(readEnv('PI_PACKAGE_DIR')).toContain('archon-pi-shim');
 
     // Stub contents are load-bearing: Pi reads `version` to populate its
     // user-agent and `piConfig` (even when empty) to opt into the defaults
     // path instead of erroring on missing config. Asserting on shape so a
     // regression here surfaces in the test suite, not in a Pi runtime crash.
-    const shimDir = process.env.PI_PACKAGE_DIR;
+    const shimDir = readEnv('PI_PACKAGE_DIR');
     expect(shimDir).toBe(join(tmpdir(), 'archon-pi-shim'));
     const stub = JSON.parse(readFileSync(join(shimDir!, 'package.json'), 'utf8')) as {
       name: string;
@@ -474,9 +522,14 @@ describe('PiProvider', () => {
     resetScript([
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -524,11 +577,9 @@ describe('PiProvider', () => {
     // Phase 1: model not in static catalog (extension provider path).
     // Phase 2: extension registers the model during bindExtensions() and find() succeeds.
     mockModelRegistryFind.mockImplementationOnce(() => undefined);
-    mockModelRegistryFind.mockImplementationOnce(() => ({
-      id: 'custom-model',
-      provider: 'extension-provider',
-      name: 'extension-provider/custom-model',
-    }));
+    mockModelRegistryFind.mockImplementationOnce(() =>
+      createMockModel('extension-provider', 'custom-model')
+    );
     resetScript(scriptedAgentEnd());
 
     const { error } = await consume(
@@ -550,9 +601,14 @@ describe('PiProvider', () => {
     resetScript([
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -588,9 +644,14 @@ describe('PiProvider', () => {
     resetScript([
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -622,9 +683,14 @@ describe('PiProvider', () => {
     resetScript([
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -653,9 +719,14 @@ describe('PiProvider', () => {
     resetScript([
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -689,9 +760,14 @@ describe('PiProvider', () => {
     resetScript([
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -715,29 +791,39 @@ describe('PiProvider', () => {
     expect(mockSetRuntimeApiKey).toHaveBeenCalledWith('anthropic', 'sk-ant-oat01-proc');
   });
 
-  test('yields assistant chunks from text_delta events', async () => {
+  test('coalesces text_delta events into a single assistant chunk (#1814)', async () => {
     process.env.GEMINI_API_KEY = 'sk-test';
     resetScript([
       {
         type: 'message_update',
-        message: { role: 'assistant' },
-        assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Hello', partial: {} },
+        message: { role: 'assistant' } as never,
+        assistantMessageEvent: {
+          type: 'text_delta',
+          contentIndex: 0,
+          delta: 'Hello',
+          partial: {} as never,
+        },
       },
       {
         type: 'message_update',
-        message: { role: 'assistant' },
+        message: { role: 'assistant' } as never,
         assistantMessageEvent: {
           type: 'text_delta',
           contentIndex: 0,
           delta: ' world',
-          partial: {},
+          partial: {} as never,
         },
       },
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 2,
@@ -759,9 +845,11 @@ describe('PiProvider', () => {
       })
     );
     expect(error).toBeUndefined();
+    // Consecutive text_delta events are coalesced into one block-level chunk
+    // (flushed before the terminal result) so downstream consumers don't see
+    // fragmented "Hello\n\n world" output — see #1814.
     expect(chunks).toEqual([
-      { type: 'assistant', content: 'Hello' },
-      { type: 'assistant', content: ' world' },
+      { type: 'assistant', content: 'Hello world' },
       expect.objectContaining({ type: 'result', stopReason: 'stop' }),
     ]);
   });
@@ -784,9 +872,14 @@ describe('PiProvider', () => {
       },
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -829,9 +922,14 @@ describe('PiProvider', () => {
     resetScript([
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -877,9 +975,14 @@ describe('PiProvider', () => {
     resetScript([
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -902,6 +1005,7 @@ describe('PiProvider', () => {
     );
     expect(error).toBeUndefined();
     expect(mockSessionOpen).toHaveBeenCalledWith('/sessions/existing-id.jsonl');
+    expect(mockSessionForkFrom).not.toHaveBeenCalled();
     expect(mockSessionCreate).not.toHaveBeenCalled();
     // No resume_failed warning
     const systemChunks = chunks.filter(
@@ -912,6 +1016,29 @@ describe('PiProvider', () => {
     // A warm resume reports resumed:true on the result chunk.
     expect(chunks.find(c => (c as { type?: string }).type === 'result')).toMatchObject({
       resumed: true,
+    });
+  });
+
+  test('forkSession resumes into a distinct branch without opening the source', async () => {
+    process.env.GEMINI_API_KEY = 'sk-test';
+    mockSessionList.mockImplementationOnce(async () => [
+      { id: 'source-id', path: '/sessions/source-id.jsonl', cwd: '/tmp' },
+    ]);
+    resetScript(scriptedAgentEnd());
+
+    const { chunks, error } = await consume(
+      new PiProvider().sendQuery('hi', '/tmp', 'source-id', {
+        model: 'google/gemini-2.5-pro',
+        forkSession: true,
+      })
+    );
+
+    expect(error).toBeUndefined();
+    expect(mockSessionForkFrom).toHaveBeenCalledWith('/sessions/source-id.jsonl', '/tmp');
+    expect(mockSessionOpen).not.toHaveBeenCalled();
+    expect(chunks.find(c => (c as { type?: string }).type === 'result')).toMatchObject({
+      resumed: true,
+      sessionId: 'mock-session-uuid',
     });
   });
 
@@ -938,9 +1065,14 @@ describe('PiProvider', () => {
     resetScript([
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -970,9 +1102,14 @@ describe('PiProvider', () => {
     return [
       {
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -1303,6 +1440,134 @@ describe('PiProvider', () => {
     expect(loaderArgs?.systemPrompt).toBeUndefined();
   });
 
+  test('invalid request-level systemPrompt does not mask valid node-level prompt', async () => {
+    // Regression: a non-string request-level prompt (preset object) must NOT win
+    // via `??` and shadow a valid node-level string — each level is validated
+    // independently before precedence applies.
+    process.env.GEMINI_API_KEY = 'sk-test';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'google/gemini-2.5-pro',
+        systemPrompt: {
+          type: 'preset',
+          preset: 'claude_code',
+          append: 'extra',
+        } as unknown as string,
+        nodeConfig: { systemPrompt: 'node-level prompt' },
+      })
+    );
+
+    // The dropped request-level object is reported, tagged with its source.
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ systemPromptType: 'object', systemPromptSource: 'request' }),
+      'pi.system_prompt_dropped_non_string'
+    );
+
+    // The valid node-level string is used.
+    const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(loaderArgs?.systemPrompt).toBe('node-level prompt');
+  });
+
+  // ─── Anthropic subscription-OAuth default system prompt (#1831) ───────
+
+  test('Anthropic OAuth session (env token) falls back to the OAuth-safe default prompt', async () => {
+    // A subscription token (sk-ant-oat*) with no explicit systemPrompt must
+    // suppress Pi's built-in prompt — Anthropic's OAuth endpoint 400s it.
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'anthropic/claude-haiku-4-5',
+        env: { ANTHROPIC_OAUTH_TOKEN: 'sk-ant-oat01-bearer' },
+      })
+    );
+
+    const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(loaderArgs?.systemPrompt).toBe(ARCHON_PI_ANTHROPIC_OAUTH_SYSTEM_PROMPT);
+  });
+
+  test('Anthropic OAuth session (auth.json subscription cred) falls back to the default prompt', async () => {
+    // Same detection via the `pi /login` path: getApiKey resolves the stored
+    // OAuth access token (sk-ant-oat*), no env var involved.
+    fileCreds.anthropic = { type: 'oauth' };
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'anthropic/claude-haiku-4-5',
+      })
+    );
+
+    const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(loaderArgs?.systemPrompt).toBe(ARCHON_PI_ANTHROPIC_OAUTH_SYSTEM_PROMPT);
+  });
+
+  test('Anthropic API-key session keeps Pi built-in prompt (systemPrompt undefined)', async () => {
+    // Narrowed scope: API-key auth is not affected by the OAuth classifier, so
+    // Pi's built-in prompt (with its dynamic tool list) must stay intact.
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-api03-key';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'anthropic/claude-haiku-4-5',
+      })
+    );
+
+    const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(loaderArgs?.systemPrompt).toBeUndefined();
+  });
+
+  test('non-Anthropic backend keeps Pi built-in prompt (systemPrompt undefined)', async () => {
+    process.env.GEMINI_API_KEY = 'sk-test';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, { model: 'google/gemini-2.5-pro' })
+    );
+
+    const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(loaderArgs?.systemPrompt).toBeUndefined();
+  });
+
+  test('explicit systemPrompt wins over the OAuth default on an OAuth session', async () => {
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'anthropic/claude-haiku-4-5',
+        env: { ANTHROPIC_OAUTH_TOKEN: 'sk-ant-oat01-bearer' },
+        nodeConfig: { systemPrompt: 'node-level custom prompt' },
+      })
+    );
+
+    const loaderArgs = MockDefaultResourceLoader.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(loaderArgs?.systemPrompt).toBe('node-level custom prompt');
+  });
+
+  test('ARCHON_PI_ANTHROPIC_OAUTH_SYSTEM_PROMPT carries no third-party "pi harness" tell', () => {
+    // Regression guard: the default must never reintroduce the self-referential
+    // vocabulary that trips Anthropic's subscription-OAuth detector.
+    const p = ARCHON_PI_ANTHROPIC_OAUTH_SYSTEM_PROMPT.toLowerCase();
+    expect(p).not.toContain('pi documentation');
+    expect(p).not.toContain('coding agent harness');
+    expect(p).not.toContain('operating inside pi');
+  });
+
   test('capabilities reflect v2 wiring', () => {
     const caps = new PiProvider().getCapabilities();
     expect(caps.thinkingControl).toBe(true);
@@ -1473,9 +1738,14 @@ describe('PiProvider', () => {
       controller.abort();
       capturedListener?.({
         type: 'agent_end',
+        willRetry: false,
         messages: [
           {
             role: 'assistant',
+            api: 'test',
+            provider: 'test',
+            model: 'test',
+            timestamp: 0,
             usage: {
               input: 1,
               output: 1,
@@ -1502,11 +1772,10 @@ describe('PiProvider', () => {
 
   test('modelFallbackMessage yields a system chunk before the agent runs', async () => {
     process.env.GEMINI_API_KEY = 'sk-test';
-    mockCreateAgentSession.mockImplementationOnce(async () => ({
-      session: mockSession,
-      extensionsResult: { extensions: [], errors: [], runtime: {} },
-      modelFallbackMessage: 'Requested sonnet-5 not available, using haiku.',
-    }));
+    mockCreateAgentSession.mockImplementationOnce(
+      async (): Promise<CreateAgentSessionResult> =>
+        createMockSessionResult('Requested sonnet-5 not available, using haiku.')
+    );
     resetScript(scriptedAgentEnd());
 
     const { chunks } = await consume(
@@ -1778,6 +2047,170 @@ describe('PiProvider', () => {
     expect(mockBindExtensions).not.toHaveBeenCalled();
   });
 
+  // ─── Per-node extension posture (assistants.pi.nodes.<nodeId>, #2073) ──
+
+  test('node override drops UIContext and negates the plan flag for that node', async () => {
+    process.env.GEMINI_API_KEY = 'sk-test';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'google/gemini-2.5-pro',
+        assistantConfig: {
+          enableExtensions: true,
+          interactive: true,
+          extensionFlags: { plan: true },
+          nodes: { implement: { interactive: false, extensionFlags: { plan: false } } },
+        },
+        nodeConfig: { nodeId: 'implement' },
+      })
+    );
+
+    // Extensions still load (session_start must fire) but with no UIContext —
+    // hasUI stays false so plannotator won't open its blocking review server.
+    expect(mockBindExtensions).toHaveBeenCalledTimes(1);
+    const [bindings] = mockBindExtensions.mock.calls[0] as [{ uiContext?: unknown }];
+    expect(bindings.uiContext).toBeUndefined();
+    // Merged flags: node-level plan: false wins over assistant-level plan: true.
+    expect(mockSetFlagValue).toHaveBeenCalledTimes(1);
+    expect(mockSetFlagValue).toHaveBeenCalledWith('plan', false);
+  });
+
+  test('node without an override keeps assistant-level UIContext and flags', async () => {
+    process.env.GEMINI_API_KEY = 'sk-test';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'google/gemini-2.5-pro',
+        assistantConfig: {
+          enableExtensions: true,
+          interactive: true,
+          extensionFlags: { plan: true },
+          nodes: { implement: { interactive: false, extensionFlags: { plan: false } } },
+        },
+        nodeConfig: { nodeId: 'plan' },
+      })
+    );
+
+    expect(mockBindExtensions).toHaveBeenCalledTimes(1);
+    const [bindings] = mockBindExtensions.mock.calls[0] as [{ uiContext?: unknown }];
+    expect(bindings.uiContext).toBeDefined();
+    expect(mockSetFlagValue).toHaveBeenCalledTimes(1);
+    expect(mockSetFlagValue).toHaveBeenCalledWith('plan', true);
+  });
+
+  test('direct chat (no nodeConfig) ignores nodes overrides', async () => {
+    process.env.GEMINI_API_KEY = 'sk-test';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'google/gemini-2.5-pro',
+        assistantConfig: {
+          interactive: true,
+          nodes: { implement: { interactive: false } },
+        },
+      })
+    );
+
+    expect(mockBindExtensions).toHaveBeenCalledTimes(1);
+    const [bindings] = mockBindExtensions.mock.calls[0] as [{ uiContext?: unknown }];
+    expect(bindings.uiContext).toBeDefined();
+  });
+
+  test('node enableExtensions: false skips binding entirely for that node', async () => {
+    process.env.GEMINI_API_KEY = 'sk-test';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'google/gemini-2.5-pro',
+        assistantConfig: {
+          enableExtensions: true,
+          interactive: true,
+          extensionFlags: { plan: true },
+          nodes: { implement: { enableExtensions: false } },
+        },
+        nodeConfig: { nodeId: 'implement' },
+      })
+    );
+
+    expect(mockBindExtensions).not.toHaveBeenCalled();
+    expect(mockSetFlagValue).not.toHaveBeenCalled();
+  });
+
+  // ─── Portable node-YAML posture (nodeConfig.pi, #2133) ─────────────────
+
+  test('node-YAML pi overrides the config nodes.<id> map (drops UI, negates plan)', async () => {
+    process.env.GEMINI_API_KEY = 'sk-test';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'google/gemini-2.5-pro',
+        assistantConfig: {
+          enableExtensions: true,
+          interactive: true,
+          extensionFlags: { plan: true },
+          // config map says implement is UI-on with plan: true …
+          nodes: { implement: { interactive: true, extensionFlags: { plan: true } } },
+        },
+        // … but the portable node-YAML block wins and turns it headless.
+        nodeConfig: {
+          nodeId: 'implement',
+          pi: { interactive: false, extensionFlags: { plan: false } },
+        },
+      })
+    );
+
+    expect(mockBindExtensions).toHaveBeenCalledTimes(1);
+    const [bindings] = mockBindExtensions.mock.calls[0] as [{ uiContext?: unknown }];
+    expect(bindings.uiContext).toBeUndefined();
+    expect(mockSetFlagValue).toHaveBeenCalledTimes(1);
+    expect(mockSetFlagValue).toHaveBeenCalledWith('plan', false);
+  });
+
+  test('node-YAML pi grants posture with no config nodes map present', async () => {
+    process.env.GEMINI_API_KEY = 'sk-test';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'google/gemini-2.5-pro',
+        assistantConfig: { enableExtensions: true, interactive: false },
+        // No nodes map; the node's own pi: block re-enables the UI bridge and grants plan.
+        nodeConfig: { nodeId: 'plan', pi: { interactive: true, extensionFlags: { plan: true } } },
+      })
+    );
+
+    expect(mockBindExtensions).toHaveBeenCalledTimes(1);
+    const [bindings] = mockBindExtensions.mock.calls[0] as [{ uiContext?: unknown }];
+    expect(bindings.uiContext).toBeDefined();
+    expect(mockSetFlagValue).toHaveBeenCalledTimes(1);
+    expect(mockSetFlagValue).toHaveBeenCalledWith('plan', true);
+  });
+
+  test('node-YAML pi enableExtensions: false skips binding even when the config map re-enables', async () => {
+    process.env.GEMINI_API_KEY = 'sk-test';
+    resetScript(scriptedAgentEnd());
+
+    await consume(
+      new PiProvider().sendQuery('hi', '/tmp', undefined, {
+        model: 'google/gemini-2.5-pro',
+        assistantConfig: {
+          enableExtensions: true,
+          interactive: true,
+          nodes: { implement: { enableExtensions: true, interactive: true } },
+        },
+        nodeConfig: { nodeId: 'implement', pi: { enableExtensions: false } },
+      })
+    );
+
+    expect(mockBindExtensions).not.toHaveBeenCalled();
+    expect(mockSetFlagValue).not.toHaveBeenCalled();
+  });
+
   test('assistantConfig.env applies to process.env when not already set', async () => {
     process.env.GEMINI_API_KEY = 'sk-test';
     delete process.env.PI_TEST_ONE;
@@ -1792,8 +2225,8 @@ describe('PiProvider', () => {
         })
       );
 
-      expect(process.env.PI_TEST_ONE).toBe('one');
-      expect(process.env.PI_TEST_TWO).toBe('two');
+      expect(readEnv('PI_TEST_ONE')).toBe('one');
+      expect(readEnv('PI_TEST_TWO')).toBe('two');
     } finally {
       delete process.env.PI_TEST_ONE;
       delete process.env.PI_TEST_TWO;
@@ -2099,22 +2532,17 @@ describe('PiProvider', () => {
      * registered into it — like the real one, whose static catalog does not
      * contain extension providers such as 'cursor'.
      */
-    function fakeExtensionAwareRegistry(): {
-      registered: Map<string, unknown>;
-      find: (
-        provider: string,
-        modelId: string
-      ) => { id: string; provider: string; name: string } | undefined;
-      registerProvider: (name: string, config: unknown) => void;
+    type ExtensionProviderConfig = Parameters<ModelRegistry['registerProvider']>[1];
+
+    function fakeExtensionAwareRegistry(): MockModelRegistry & {
+      registered: Map<string, ExtensionProviderConfig>;
     } {
-      const registered = new Map<string, unknown>();
+      const registered = new Map<string, ExtensionProviderConfig>();
       return {
         registered,
         find: (provider: string, modelId: string) =>
-          registered.has(provider)
-            ? { id: modelId, provider, name: `${provider}/${modelId}` }
-            : undefined,
-        registerProvider: (name: string, config: unknown) => {
+          registered.has(provider) ? createMockModel(provider, modelId) : undefined,
+        registerProvider: (name: string, config: ExtensionProviderConfig): void => {
           registered.set(name, config);
         },
       };
@@ -2126,20 +2554,17 @@ describe('PiProvider', () => {
      * registry, then clear it (the SDK reassigns to []).
      */
     function drainQueueOnceIntoSessionRegistry(): void {
-      mockCreateAgentSession.mockImplementationOnce(async (options?: unknown) => {
-        const { modelRegistry } = options as {
-          modelRegistry: { registerProvider: (name: string, config: unknown) => void };
-        };
-        for (const { name, config } of mockLoaderRuntime.pendingProviderRegistrations) {
-          modelRegistry.registerProvider(name, config);
+      mockCreateAgentSession.mockImplementationOnce(
+        async (options?: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> => {
+          const modelRegistry = options?.modelRegistry;
+          if (!modelRegistry) throw new Error('Expected a model registry');
+          for (const { name, config } of mockLoaderRuntime.pendingProviderRegistrations) {
+            modelRegistry.registerProvider(name, config);
+          }
+          mockLoaderRuntime.pendingProviderRegistrations = [];
+          return createMockSessionResult();
         }
-        mockLoaderRuntime.pendingProviderRegistrations = [];
-        return {
-          session: mockSession,
-          extensionsResult: { extensions: [], errors: [], runtime: {} },
-          modelFallbackMessage: undefined,
-        };
-      });
+      );
     }
 
     test('extension-registered model resolves on the 2nd+ sendQuery (the issue #2064 scenario)', async () => {

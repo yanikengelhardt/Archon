@@ -68,13 +68,34 @@ export type BaseFields = Pick<WireDagNode, WireBaseKey>;
 // Per-variant data shapes
 // ---------------------------------------------------------------------------
 
-/** Loop config. `fresh_context` is always present (engine default `false`). */
+/**
+ * Loop config. `fresh_context` is always present (engine default `false`).
+ *
+ * Exactly ONE of `prompt` (inline per-iteration prompt) / `command` (named
+ * command file whose body is the per-iteration prompt) is present — mirroring
+ * the engine schema's one-of rule. The inspector's source toggle maintains the
+ * invariant while editing; structural validation reports a violation instead
+ * of letting export guess.
+ */
 export interface LoopNodeData {
-  prompt: string;
-  until: string;
+  prompt?: string;
+  command?: string;
+  /**
+   * Prose completion signal. Optional since #2563 — a loop declaring only
+   * `until_bash` has no prose path at all, so the engine requires *at least one*
+   * of the two rather than `until` unconditionally. Structural validation mirrors
+   * that rule; every read here must tolerate `undefined`.
+   */
+  until?: string;
   max_iterations: number;
   fresh_context: boolean;
   until_bash?: string;
+  /**
+   * Structured completion channel (#2563): names a declared boolean in the node's
+   * `output_format` (carried as a base field) whose `true` ends the loop. `loop:`
+   * only — a `loop_group` has no such channel.
+   */
+  until_field?: string;
   interactive?: boolean;
   gate_message?: string;
 }
