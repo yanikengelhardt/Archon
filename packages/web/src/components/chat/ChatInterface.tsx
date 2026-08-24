@@ -33,8 +33,9 @@ import type {
   ErrorDisplay,
   TextEventMeta,
   WorkflowDispatchEvent,
+  SessionInfoEvent,
 } from '@/lib/types';
-import { applyOnText } from '@/lib/chat-message-reducer';
+import { applyOnText, applyOnThinking, applyOnRunMeta } from '@/lib/chat-message-reducer';
 import { applySystemStatus } from '@/lib/system-status-reducer';
 import {
   getCachedMessages,
@@ -54,6 +55,7 @@ function mapMessageRow(row: MessageResponse): ChatMessage {
       duration?: number;
       output?: string;
     }[];
+    reasoning?: string;
     error?: ErrorDisplay;
     workflowDispatch?: { workerConversationId: string; workflowName: string };
     workflowResult?: { workflowName: string; runId: string };
@@ -86,6 +88,10 @@ function mapMessageRow(row: MessageResponse): ChatMessage {
       isExpanded: false,
       duration: tc.duration ?? 0,
     })),
+    // Persisted by the orchestrator for non-web platforms (Slack/Telegram/CLI),
+    // which have no live reasoning surface. Web turns stream it over SSE instead
+    // and never persist it, so this is undefined for them.
+    reasoning: meta.reasoning,
     error: meta.error,
     workflowDispatch: meta.workflowDispatch,
     workflowResult: meta.workflowResult,
@@ -527,8 +533,20 @@ export function ChatInterface({
     }
   }, [activeWorkflow?.status, onLockChange]);
 
-  const onSessionInfo = useCallback((_sessionId: string, _cost?: number): void => {
-    // Session info can be stored for display later
+  const onSessionInfo = useCallback((event: SessionInfoEvent): void => {
+    setMessages(prev =>
+      applyOnRunMeta(prev, {
+        cost: event.cost,
+        tokens: event.tokens,
+        model: event.model,
+        stopReason: event.stopReason,
+        numTurns: event.numTurns,
+      })
+    );
+  }, []);
+
+  const onThinking = useCallback((content: string): void => {
+    setMessages(prev => applyOnThinking(prev, content, nextId));
   }, []);
 
   const onWorkflowDispatch = useCallback((event: WorkflowDispatchEvent): void => {
@@ -590,6 +608,7 @@ export function ChatInterface({
     onError,
     onLockChange,
     onSessionInfo,
+    onThinking,
     onWorkflowDispatch,
     onWarning,
     onRetract,

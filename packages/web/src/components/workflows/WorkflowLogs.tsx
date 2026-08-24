@@ -571,7 +571,7 @@ export function WorkflowLogs({
     }
   }, []);
 
-  const onSessionInfo = useCallback((_sessionId: string, _cost?: number): void => {
+  const onSessionInfo = useCallback((): void => {
     // No-op for read-only view
   }, []);
 

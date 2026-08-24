@@ -6,6 +6,8 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowDown, Sparkles, ArrowRight, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { MessageBubble } from './MessageBubble';
+import { ReasoningCard } from './ReasoningCard';
+import { RunMetaFooter } from './RunMetaFooter';
 import { ToolCallCard } from './ToolCallCard';
 import { ErrorCard } from './ErrorCard';
 import { WorkflowProgressCard } from './WorkflowProgressCard';
@@ -399,11 +401,15 @@ function MessageListRaw({
                   />
                 ) : (
                   <>
+                    {msg.reasoning && (
+                      <ReasoningCard content={msg.reasoning} isStreaming={msg.isStreaming} />
+                    )}
                     <MessageBubble message={msg} />
                     {msg.toolCalls?.map(tool => (
                       <ToolCallCard key={tool.id} tool={tool} />
                     ))}
                     {msg.error && <ErrorCard error={msg.error} />}
+                    {msg.runMeta && <RunMetaFooter meta={msg.runMeta} />}
                     {msg.workflowDispatch && (
                       <WorkflowProgressCard
                         workflowName={msg.workflowDispatch.workflowName}

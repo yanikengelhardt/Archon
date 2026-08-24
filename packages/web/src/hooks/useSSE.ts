@@ -12,6 +12,7 @@ import type {
   WorkflowTaskActivityEvent,
   WorkflowHookActivityEvent,
   DagNodeEvent,
+  SessionInfoEvent,
 } from '@/lib/types';
 import { SSE_BASE_URL } from '@/lib/api';
 
@@ -38,7 +39,8 @@ interface SSEHandlers {
   onToolResult: (name: string, output: string, duration: number, toolCallId?: string) => void;
   onError: (error: ErrorDisplay) => void;
   onLockChange: (locked: boolean, queuePosition?: number) => void;
-  onSessionInfo: (sessionId: string, cost?: number) => void;
+  onSessionInfo: (event: SessionInfoEvent) => void;
+  onThinking?: (content: string) => void;
   onWorkflowStatus?: (event: WorkflowStatusEvent) => void;
   onWorkflowArtifact?: (event: WorkflowArtifactEvent) => void;
   onDagNode?: (event: DagNodeEvent) => void;
@@ -178,7 +180,13 @@ export function useSSE(
             h.onLockChange(data.locked, data.queuePosition);
             break;
           case 'session_info':
-            h.onSessionInfo(data.sessionId, data.cost);
+            h.onSessionInfo(data);
+            break;
+          case 'thinking':
+            // Reasoning renders in its own card, not in the text bubble, so it
+            // must NOT flush the text buffer — doing so would split one reply
+            // into a new segment every time the model interleaved a thought.
+            h.onThinking?.(data.content);
             break;
           case 'workflow_status':
             h.onWorkflowStatus?.(data);

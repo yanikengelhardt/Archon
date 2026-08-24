@@ -202,10 +202,32 @@ export class WebAdapter implements IWebPlatformAdapter {
         duration,
         timestamp: now,
       });
-    } else if (chunk.type === 'result' && chunk.sessionId) {
+    } else if (chunk.type === 'thinking' && chunk.content) {
+      // Live-only: reasoning is deliberately NOT handed to MessagePersistence.
+      // It is a view into the turn in flight, not part of the transcript, so
+      // reloading a conversation shows the reply without it. Persisting it
+      // would also put raw chain-of-thought in the messages table.
+      event = JSON.stringify({
+        type: 'thinking',
+        content: chunk.content,
+        timestamp: Date.now(),
+      });
+    } else if (chunk.type === 'result') {
+      // Not gated on `sessionId`: Codex-style providers omit it, and gating
+      // dropped the whole chunk — taking cost, tokens, model and stop reason
+      // with it. Every field is optional on the wire; the client renders what
+      // arrives.
+      const model = chunk.model ?? chunk.resolvedModel?.id;
       event = JSON.stringify({
         type: 'session_info',
-        sessionId: chunk.sessionId,
+        ...(chunk.sessionId ? { sessionId: chunk.sessionId } : {}),
+        ...(typeof chunk.cost === 'number' && Number.isFinite(chunk.cost)
+          ? { cost: chunk.cost }
+          : {}),
+        ...(chunk.tokens ? { tokens: chunk.tokens } : {}),
+        ...(model ? { model } : {}),
+        ...(chunk.stopReason ? { stopReason: chunk.stopReason } : {}),
+        ...(typeof chunk.numTurns === 'number' ? { numTurns: chunk.numTurns } : {}),
         timestamp: Date.now(),
       });
     } else if (chunk.type === 'workflow_dispatch') {

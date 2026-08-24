@@ -18,6 +18,7 @@ import type {
 } from '../types';
 import type { SendQueryOptions, TokenUsage } from '@archon/providers/types';
 import { ConversationNotFoundError, isWebAdapter } from '../types';
+import { TurnRecord } from './turn-record';
 import * as db from '../db/conversations';
 import * as codebaseDb from '../db/codebases';
 import * as sessionDb from '../db/sessions';
@@ -2306,6 +2307,9 @@ async function handleStreamMode(
 ): Promise<void> {
   const turnStartedAt = Date.now();
   const allMessages: string[] = [];
+  // Non-web platforms have no live surface for tools/reasoning, so the turn is
+  // recorded here and persisted as message metadata (see the persist call below).
+  const turnRecord = new TurnRecord();
   let newSessionId: string | undefined;
   let commandDetected = false;
   let commandFullyParsed = false;
@@ -2357,6 +2361,7 @@ async function handleStreamMode(
       }
     } else if (msg.type === 'tool' && msg.toolName) {
       if (!commandDetected) {
+        turnRecord.recordTool(msg.toolName, msg.toolInput, msg.toolCallId);
         const toolMessage = formatToolCall(msg.toolName, msg.toolInput);
         await platform.sendMessage(conversationId, toolMessage, {
           category: 'tool_call_formatted',
@@ -2366,8 +2371,22 @@ async function handleStreamMode(
         }
       }
     } else if (msg.type === 'tool_result' && msg.toolName) {
-      if (!commandDetected && platform.sendStructuredEvent) {
-        await platform.sendStructuredEvent(conversationId, msg);
+      if (!commandDetected) {
+        turnRecord.recordToolResult(msg.toolName, msg.toolOutput, msg.toolCallId);
+        if (platform.sendStructuredEvent) {
+          await platform.sendStructuredEvent(conversationId, msg);
+        }
+      }
+    } else if (msg.type === 'thinking' && msg.content) {
+      // Reasoning goes out over `sendStructuredEvent` ONLY — never `sendMessage`.
+      // That is the whole boundary: only adapters with a dedicated surface for it
+      // implement the method (today, web), so Slack/Telegram/Discord/CLI drop it
+      // for free rather than interleaving raw chain-of-thought with the reply.
+      if (!commandDetected) {
+        turnRecord.recordReasoning(msg.content);
+        if (platform.sendStructuredEvent) {
+          await platform.sendStructuredEvent(conversationId, msg);
+        }
       }
     } else if (msg.type === 'rate_limit') {
       // Providers may emit a rate limit event before (or instead of) a structured error result.
@@ -2492,14 +2511,18 @@ async function handleStreamMode(
   // Persist the assistant reply for non-web platforms so it appears in the
   // Web UI conversation history. The web adapter persists through its
   // MessagePersistence buffer; skip it here to avoid double-write (#1182).
+  // The turn record rides along as metadata so a Slack/Telegram/CLI turn is
+  // inspectable in the Web UI (tool cards + reasoning), not just its final prose.
   if (!isWebAdapter(platform) && fullResponse) {
-    messageDb.addMessage(conversation.id, 'assistant', fullResponse).catch((e: unknown) => {
-      const err = e instanceof Error ? e : new Error(String(e));
-      getLog().warn(
-        { err, errorType: err.constructor.name, conversationId },
-        'orchestrator.assistant_message_persist_failed'
-      );
-    });
+    messageDb
+      .addMessage(conversation.id, 'assistant', fullResponse, turnRecord.toMetadata())
+      .catch((e: unknown) => {
+        const err = e instanceof Error ? e : new Error(String(e));
+        getLog().warn(
+          { err, errorType: err.constructor.name, conversationId },
+          'orchestrator.assistant_message_persist_failed'
+        );
+      });
   }
   await maybeSendResultFooter(platform, conversationId, lastResult);
   // Anonymous telemetry: one completed direct-chat turn. The workflow-invocation
@@ -2545,6 +2568,9 @@ async function handleBatchMode(
   const turnStartedAt = Date.now();
   const allChunks: { type: string; content: string }[] = [];
   const assistantMessages: string[] = [];
+  // Batch mode is the default for Slack, so this is the path that makes a
+  // Slack turn inspectable in the Web UI. See the persist call below.
+  const turnRecord = new TurnRecord();
   let assistantChunksTruncated = false;
   let totalChunksTruncated = false;
   let newSessionId: string | undefined;
@@ -2607,9 +2633,23 @@ async function handleBatchMode(
       }
     } else if (msg.type === 'tool' && msg.toolName) {
       if (!commandDetected) {
+        turnRecord.recordTool(msg.toolName, msg.toolInput, msg.toolCallId);
         const toolMessage = formatToolCall(msg.toolName, msg.toolInput);
         allChunks.push({ type: 'tool', content: toolMessage });
         getLog().debug({ toolName: msg.toolName }, 'tool_call');
+      }
+    } else if (msg.type === 'tool_result' && msg.toolName) {
+      // Batch mode has no live surface to stream a result to, but the record
+      // needs the output and duration — without this branch every persisted
+      // tool card would render as a call with no result.
+      if (!commandDetected) {
+        turnRecord.recordToolResult(msg.toolName, msg.toolOutput, msg.toolCallId);
+      }
+    } else if (msg.type === 'thinking' && msg.content) {
+      // Recorded, never sent: batch platforms get the reply only. The reasoning
+      // is readable afterwards in the Web UI.
+      if (!commandDetected) {
+        turnRecord.recordReasoning(msg.content);
       }
     } else if (msg.type === 'rate_limit') {
       await platform.sendMessage(conversationId, formatRateLimitUserMessage(msg.rateLimitInfo));
@@ -2764,13 +2804,15 @@ async function handleBatchMode(
   // Web UI conversation history. The web adapter persists through its
   // MessagePersistence buffer; skip it here to avoid double-write (#1182).
   if (!isWebAdapter(platform) && finalMessage) {
-    messageDb.addMessage(conversation.id, 'assistant', finalMessage).catch((e: unknown) => {
-      const err = e instanceof Error ? e : new Error(String(e));
-      getLog().warn(
-        { err, errorType: err.constructor.name, conversationId },
-        'orchestrator.assistant_message_persist_failed'
-      );
-    });
+    messageDb
+      .addMessage(conversation.id, 'assistant', finalMessage, turnRecord.toMetadata())
+      .catch((e: unknown) => {
+        const err = e instanceof Error ? e : new Error(String(e));
+        getLog().warn(
+          { err, errorType: err.constructor.name, conversationId },
+          'orchestrator.assistant_message_persist_failed'
+        );
+      });
   }
   await maybeSendResultFooter(platform, conversationId, lastResult);
   // Anonymous telemetry: one completed direct-chat turn (same exclusion

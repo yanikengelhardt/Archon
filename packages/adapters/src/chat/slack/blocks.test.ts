@@ -37,15 +37,15 @@ describe('formatCostFooter', () => {
     );
   });
 
-  test('combines model, cost, output tokens, and stopReason', () => {
+  test('combines model, cost, output tokens, and an abnormal stopReason', () => {
     expect(
       formatCostFooter({
         model: 'gpt-5.4',
         cost: 0.1234,
         tokens: { input: 5000, output: 7500 },
-        stopReason: 'end_turn',
+        stopReason: 'max_tokens',
       })
-    ).toBe('_gpt-5.4 · $0.1234 · out: 7.5k · stop: end_turn_');
+    ).toBe('_gpt-5.4 · $0.1234 · out: 7.5k · stop: max_tokens_');
   });
 
   test('combines cost, output tokens, and stopReason without model', () => {
@@ -53,9 +53,27 @@ describe('formatCostFooter', () => {
       formatCostFooter({
         cost: 0.1234,
         tokens: { input: 5000, output: 7500 },
-        stopReason: 'end_turn',
+        stopReason: 'aborted',
       })
-    ).toBe('_$0.1234 · out: 7.5k · stop: end_turn_');
+    ).toBe('_$0.1234 · out: 7.5k · stop: aborted_');
+  });
+
+  test('suppresses normal stop reasons across providers', () => {
+    // Pi spells a clean end-of-turn `stop`, Claude `end_turn`. Echoing either
+    // rendered a constant `stop: stop` / `stop: end_turn` badge on every
+    // healthy turn, which is what this suppression exists to remove.
+    for (const stopReason of ['stop', 'end_turn']) {
+      expect(formatCostFooter({ model: 'pi', stopReason })).toBe('_pi_');
+    }
+  });
+
+  test('returns null when a normal stopReason is the only field', () => {
+    expect(formatCostFooter({ stopReason: 'stop' })).toBeNull();
+    expect(formatCostFooter({ stopReason: 'end_turn' })).toBeNull();
+  });
+
+  test('surfaces an abnormal stopReason even as the only field', () => {
+    expect(formatCostFooter({ stopReason: 'refusal' })).toBe('_stop: refusal_');
   });
 
   test('drops non-finite cost', () => {

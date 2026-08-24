@@ -34,9 +34,11 @@ function makeAdapter(): {
   adapter: WebAdapter;
   emitted: string[];
   appendToolResultCalls: unknown[][];
+  appendTextCalls: unknown[][];
 } {
   const emitted: string[] = [];
   const appendToolResultCalls: unknown[][] = [];
+  const appendTextCalls: unknown[][] = [];
 
   const mockTransport = {
     emit: mock(async (_id: string, event: string) => {
@@ -49,7 +51,9 @@ function makeAdapter(): {
       appendToolResultCalls.push([_id, name, output, duration]);
     }),
     appendToolCall: mock(() => {}),
-    appendText: mock(() => {}),
+    appendText: mock((...args: unknown[]) => {
+      appendTextCalls.push(args);
+    }),
     flush: mock(async () => {}),
     finalizeRunningTools: mock(() => {}),
   } as unknown as MessagePersistence;
@@ -65,7 +69,7 @@ function makeAdapter(): {
   } as unknown as WorkflowEventBridge;
 
   const adapter = new WebAdapter(mockTransport, mockPersistence, mockBridge);
-  return { adapter, emitted, appendToolResultCalls };
+  return { adapter, emitted, appendToolResultCalls, appendTextCalls };
 }
 
 // ---------------------------------------------------------------------------
@@ -162,5 +166,108 @@ describe('WebAdapter.sendMessage — text event category', () => {
     });
 
     expect(emitted.length).toBe(0);
+  });
+});
+
+describe('WebAdapter.sendStructuredEvent — reasoning', () => {
+  test('forwards a thinking chunk as a thinking event', async () => {
+    const { adapter, emitted } = makeAdapter();
+
+    await adapter.sendStructuredEvent('conv-1', {
+      type: 'thinking',
+      content: 'Checking the config first.',
+    });
+
+    expect(emitted.length).toBe(1);
+    const parsed = JSON.parse(emitted[0]!) as Record<string, unknown>;
+    expect(parsed.type).toBe('thinking');
+    expect(parsed.content).toBe('Checking the config first.');
+  });
+
+  test('does NOT persist reasoning — it is live-only, never part of the transcript', async () => {
+    const { adapter, appendTextCalls } = makeAdapter();
+
+    await adapter.sendStructuredEvent('conv-1', { type: 'thinking', content: 'secret thought' });
+
+    expect(appendTextCalls.length).toBe(0);
+  });
+
+  test('drops an empty thinking chunk rather than emitting a blank card', async () => {
+    const { adapter, emitted } = makeAdapter();
+
+    await adapter.sendStructuredEvent('conv-1', { type: 'thinking', content: '' });
+
+    expect(emitted.length).toBe(0);
+  });
+});
+
+describe('WebAdapter.sendStructuredEvent — result metadata', () => {
+  test('forwards cost, tokens, model, stopReason and numTurns alongside the session id', async () => {
+    const { adapter, emitted } = makeAdapter();
+
+    await adapter.sendStructuredEvent('conv-1', {
+      type: 'result',
+      sessionId: 'sid-1',
+      cost: 0.0421,
+      tokens: { input: 12000, output: 850 },
+      model: 'claude-opus-5',
+      stopReason: 'end_turn',
+      numTurns: 3,
+    });
+
+    expect(emitted.length).toBe(1);
+    const parsed = JSON.parse(emitted[0]!) as Record<string, unknown>;
+    expect(parsed.type).toBe('session_info');
+    expect(parsed.sessionId).toBe('sid-1');
+    expect(parsed.cost).toBe(0.0421);
+    expect(parsed.tokens).toEqual({ input: 12000, output: 850 });
+    expect(parsed.model).toBe('claude-opus-5');
+    expect(parsed.stopReason).toBe('end_turn');
+    expect(parsed.numTurns).toBe(3);
+  });
+
+  test('emits metadata for a result with no sessionId', async () => {
+    // Regression: the branch was gated on `chunk.sessionId`, so a provider that
+    // omits it (Codex) had its entire result chunk dropped — cost, tokens and
+    // stop reason with it.
+    const { adapter, emitted } = makeAdapter();
+
+    await adapter.sendStructuredEvent('conv-1', {
+      type: 'result',
+      cost: 0.01,
+      tokens: { input: 100, output: 20 },
+    });
+
+    expect(emitted.length).toBe(1);
+    const parsed = JSON.parse(emitted[0]!) as Record<string, unknown>;
+    expect(parsed.type).toBe('session_info');
+    expect('sessionId' in parsed).toBe(false);
+    expect(parsed.cost).toBe(0.01);
+  });
+
+  test('falls back to resolvedModel.id when the provider sets no flat model', async () => {
+    const { adapter, emitted } = makeAdapter();
+
+    await adapter.sendStructuredEvent('conv-1', {
+      type: 'result',
+      sessionId: 'sid-2',
+      resolvedModel: { id: 'anthropic/claude-haiku-4-5' },
+    });
+
+    const parsed = JSON.parse(emitted[0]!) as Record<string, unknown>;
+    expect(parsed.model).toBe('anthropic/claude-haiku-4-5');
+  });
+
+  test('omits a non-finite cost rather than serialising it as null', async () => {
+    const { adapter, emitted } = makeAdapter();
+
+    await adapter.sendStructuredEvent('conv-1', {
+      type: 'result',
+      sessionId: 'sid-3',
+      cost: Number.NaN,
+    });
+
+    const parsed = JSON.parse(emitted[0]!) as Record<string, unknown>;
+    expect('cost' in parsed).toBe(false);
   });
 });

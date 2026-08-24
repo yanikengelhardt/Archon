@@ -3384,6 +3384,104 @@ describe('stale session ID clearing on error_during_execution', () => {
   });
 });
 
+// ─── Reasoning routing ────────────────────────────────────────────────────────
+
+describe('handleMessage — reasoning routing', () => {
+  beforeEach(() => {
+    mockUpdateSession.mockClear();
+    mockTransitionSession.mockClear();
+    mockGetOrCreateConversation.mockReset();
+    mockGetCodebase.mockReset();
+    mockSendQuery.mockReset();
+    mockGetRecentWorkflowResultMessages.mockReset();
+    mockGetRecentWorkflowResultMessages.mockImplementation(() => Promise.resolve([]));
+    mockDiscoverWorkflowsWithConfig.mockReset();
+    mockDiscoverWorkflowsWithConfig.mockImplementation(() =>
+      Promise.resolve({ workflows: [], errors: [] })
+    );
+    mockGetOrCreateConversation.mockImplementation(() => Promise.resolve(makeConversation()));
+    mockGetCodebase.mockImplementation(() => Promise.resolve(null));
+    mockListCodebases.mockReset();
+    mockListCodebases.mockImplementation(() => Promise.resolve([]));
+  });
+
+  test('forwards thinking chunks over sendStructuredEvent, never sendMessage', async () => {
+    mockSendQuery.mockImplementationOnce(async function* () {
+      yield { type: 'thinking', content: 'Weighing two options.' };
+      yield { type: 'assistant', content: 'Here is the answer.' };
+      yield { type: 'result', sessionId: 'sid-1' };
+    });
+    mockTransitionSession.mockResolvedValueOnce({ id: 'session-1', assistant_session_id: null });
+
+    const platform = makePlatform();
+    const sendStructuredEvent = mock(() => Promise.resolve());
+    platform.sendStructuredEvent = sendStructuredEvent;
+    (platform.getStreamingMode as ReturnType<typeof mock>).mockReturnValue('stream');
+
+    await handleMessage(platform, 'conv-1', 'hello');
+
+    const structured = sendStructuredEvent.mock.calls.map(
+      (c: unknown[]) => c[1] as { type: string; content?: string }
+    );
+    expect(
+      structured.some(e => e.type === 'thinking' && e.content === 'Weighing two options.')
+    ).toBe(true);
+
+    // The reply went out as prose; the reasoning did not.
+    const sent = (platform.sendMessage as ReturnType<typeof mock>).mock.calls.map(
+      (c: unknown[]) => c[1] as string
+    );
+    expect(sent).toContain('Here is the answer.');
+    expect(sent.some((m: string) => m.includes('Weighing two options.'))).toBe(false);
+  });
+
+  test('drops reasoning entirely on adapters without sendStructuredEvent (Slack/Telegram)', async () => {
+    // This is the whole boundary that keeps chain-of-thought out of Slack:
+    // reasoning rides sendStructuredEvent only, which chat adapters other than
+    // web do not implement. If a future change routes it through sendMessage,
+    // this fails.
+    mockSendQuery.mockImplementationOnce(async function* () {
+      yield { type: 'thinking', content: 'Private deliberation.' };
+      yield { type: 'assistant', content: 'Final answer.' };
+      yield { type: 'result', sessionId: 'sid-2' };
+    });
+    mockTransitionSession.mockResolvedValueOnce({ id: 'session-1', assistant_session_id: null });
+
+    const platform = makePlatform();
+    expect(platform.sendStructuredEvent).toBeUndefined();
+    (platform.getStreamingMode as ReturnType<typeof mock>).mockReturnValue('stream');
+
+    await handleMessage(platform, 'conv-1', 'hello');
+
+    const sent = (platform.sendMessage as ReturnType<typeof mock>).mock.calls.map(
+      (c: unknown[]) => c[1] as string
+    );
+    expect(sent.some((m: string) => m.includes('Private deliberation.'))).toBe(false);
+    expect(sent).toContain('Final answer.');
+  });
+
+  test('ignores an empty thinking chunk', async () => {
+    mockSendQuery.mockImplementationOnce(async function* () {
+      yield { type: 'thinking', content: '' };
+      yield { type: 'assistant', content: 'Answer.' };
+      yield { type: 'result', sessionId: 'sid-3' };
+    });
+    mockTransitionSession.mockResolvedValueOnce({ id: 'session-1', assistant_session_id: null });
+
+    const platform = makePlatform();
+    const sendStructuredEvent = mock(() => Promise.resolve());
+    platform.sendStructuredEvent = sendStructuredEvent;
+    (platform.getStreamingMode as ReturnType<typeof mock>).mockReturnValue('stream');
+
+    await handleMessage(platform, 'conv-1', 'hello');
+
+    const structured = sendStructuredEvent.mock.calls.map(
+      (c: unknown[]) => c[1] as { type: string }
+    );
+    expect(structured.some(e => e.type === 'thinking')).toBe(false);
+  });
+});
+
 // ─── Multi-chunk command accumulation regression ──────────────────────────────
 
 describe('handleMessage — multi-chunk command accumulation (regression)', () => {
@@ -4617,7 +4715,10 @@ describe('message persistence for non-web platforms', () => {
     expect(mockAddMessage).toHaveBeenCalledWith(
       'conv-db-id',
       'assistant',
-      expect.stringContaining('hello back')
+      expect.stringContaining('hello back'),
+      // The turn record rides as metadata; empty here since this turn used no
+      // tools and produced no reasoning.
+      {}
     );
     expect(mockAddMessage).toHaveBeenCalledTimes(2);
   });
@@ -4641,7 +4742,10 @@ describe('message persistence for non-web platforms', () => {
     expect(mockAddMessage).toHaveBeenCalledWith(
       'conv-db-id',
       'assistant',
-      expect.stringContaining('hello back')
+      expect.stringContaining('hello back'),
+      // The turn record rides as metadata; empty here since this turn used no
+      // tools and produced no reasoning.
+      {}
     );
     expect(mockAddMessage).toHaveBeenCalledTimes(2);
   });
@@ -4700,9 +4804,88 @@ describe('message persistence for non-web platforms', () => {
     expect(mockAddMessage).toHaveBeenCalledWith(
       'conv-db-id',
       'assistant',
-      expect.stringContaining('hello back')
+      expect.stringContaining('hello back'),
+      // The turn record rides as metadata; empty here since this turn used no
+      // tools and produced no reasoning.
+      {}
     );
     expect(mockAddMessage).toHaveBeenCalledTimes(2);
+  });
+
+  test('persists tool calls and reasoning as metadata for a Slack-shaped batch turn', async () => {
+    // The gap this closes: Slack defaults to batch mode, and the batch path
+    // used to persist ONLY the assistant prose — so a Slack conversation opened
+    // in the Web UI showed the answer with no record of what produced it.
+    mockSendQuery.mockImplementation(async function* () {
+      yield { type: 'thinking', content: 'Need to read the config first.' };
+      yield {
+        type: 'tool',
+        toolName: 'read_file',
+        toolInput: { path: 'a.ts' },
+        toolCallId: 'tc-1',
+      };
+      yield {
+        type: 'tool_result',
+        toolName: 'read_file',
+        toolOutput: 'contents',
+        toolCallId: 'tc-1',
+      };
+      yield { type: 'assistant', content: 'hello back' };
+      yield { type: 'result', sessionId: 'sess-1' };
+    });
+
+    const platform: IPlatformAdapter = {
+      ...makePlatform(),
+      getPlatformType: mock(() => 'slack'),
+      getStreamingMode: mock(() => 'batch' as const),
+    };
+
+    await handleMessage(platform, 'conv-1', 'what is this repo?');
+
+    const assistantCall = mockAddMessage.mock.calls.find(
+      (c: unknown[]) => c[1] === 'assistant'
+    ) as [string, string, string, Record<string, unknown>];
+    const metadata = assistantCall[3] as {
+      toolCalls?: { name: string; input: unknown; output?: string; duration?: number }[];
+      reasoning?: string;
+    };
+
+    expect(metadata.reasoning).toBe('Need to read the config first.');
+    expect(metadata.toolCalls).toHaveLength(1);
+    expect(metadata.toolCalls?.[0].name).toBe('read_file');
+    expect(metadata.toolCalls?.[0].input).toEqual({ path: 'a.ts' });
+    expect(metadata.toolCalls?.[0].output).toBe('contents');
+    expect(typeof metadata.toolCalls?.[0].duration).toBe('number');
+  });
+
+  test('persists tool calls and reasoning as metadata in stream mode too', async () => {
+    mockSendQuery.mockImplementation(async function* () {
+      yield { type: 'thinking', content: 'Deliberating.' };
+      yield { type: 'tool', toolName: 'bash', toolInput: { command: 'ls' }, toolCallId: 'tc-1' };
+      yield { type: 'tool_result', toolName: 'bash', toolOutput: 'a.ts', toolCallId: 'tc-1' };
+      yield { type: 'assistant', content: 'hello back' };
+      yield { type: 'result', sessionId: 'sess-1' };
+    });
+
+    const platform: IPlatformAdapter = {
+      ...makePlatform(),
+      getPlatformType: mock(() => 'telegram'),
+      getStreamingMode: mock(() => 'stream' as const),
+    };
+
+    await handleMessage(platform, 'conv-1', 'what is this repo?');
+
+    const assistantCall = mockAddMessage.mock.calls.find(
+      (c: unknown[]) => c[1] === 'assistant'
+    ) as [string, string, string, Record<string, unknown>];
+    const metadata = assistantCall[3] as {
+      toolCalls?: { name: string; output?: string }[];
+      reasoning?: string;
+    };
+
+    expect(metadata.reasoning).toBe('Deliberating.');
+    expect(metadata.toolCalls?.[0].name).toBe('bash');
+    expect(metadata.toolCalls?.[0].output).toBe('a.ts');
   });
 
   test('does NOT persist a user row for a deterministic slash command (no orphan)', async () => {

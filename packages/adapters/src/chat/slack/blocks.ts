@@ -64,6 +64,19 @@ function formatElapsed(ms: number): string {
 }
 
 /**
+ * Stop reasons that mean "the model ended its turn normally".
+ *
+ * Providers spell the same outcome differently — Pi reports `stop`, Claude
+ * `end_turn` — so echoing the raw value renders `stop: stop` under every
+ * healthy Pi turn and `stop: end_turn` under every healthy Claude one. Neither
+ * tells the reader anything. Abnormal terminations (`max_tokens`, `aborted`,
+ * `refusal`, `error`, and Claude's `stop_sequence`, which Archon never
+ * configures for chat) stay visible because they explain a truncated or
+ * missing reply.
+ */
+const NORMAL_STOP_REASONS = new Set(['stop', 'end_turn']);
+
+/**
  * Format a small italic cost footer line.
  * Returns null when there's nothing meaningful to display (no cost AND no tokens).
  */
@@ -85,7 +98,7 @@ export function formatCostFooter(input: {
     const out = input.tokens.output ?? 0;
     if (out > 0) parts.push(`out: ${formatTokenCount(out)}`);
   }
-  if (input.stopReason) {
+  if (input.stopReason && !NORMAL_STOP_REASONS.has(input.stopReason)) {
     parts.push(`stop: ${input.stopReason}`);
   }
   if (parts.length === 0) return null;

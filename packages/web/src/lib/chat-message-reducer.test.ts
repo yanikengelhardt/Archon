@@ -1,5 +1,10 @@
 import { describe, test, expect } from 'bun:test';
-import { applyOnText, startsNewTextBatch } from './chat-message-reducer';
+import {
+  applyOnText,
+  applyOnThinking,
+  applyOnRunMeta,
+  startsNewTextBatch,
+} from './chat-message-reducer';
 import type { ChatMessage, ToolCallDisplay } from './types';
 
 // Helpers
@@ -324,5 +329,118 @@ describe('applyOnText — workflow-result (Rule 1)', () => {
     // Same runId already in state — no new message added
     expect(result).toHaveLength(1);
     expect(result).toBe(prev); // reference equality: same array returned
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyOnThinking — reasoning attaches to the turn in flight
+// ---------------------------------------------------------------------------
+
+describe('applyOnThinking', () => {
+  test('attaches reasoning to the open streaming placeholder', () => {
+    const prev: ChatMessage[] = [makeAssistant()];
+    const result = applyOnThinking(prev, 'Let me check the config.', makeId, NOW);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toBe('Let me check the config.');
+    expect(result[0].content).toBe('');
+  });
+
+  test('accumulates successive deltas into one block', () => {
+    let messages: ChatMessage[] = [makeAssistant()];
+    messages = applyOnThinking(messages, 'First ', makeId, NOW);
+    messages = applyOnThinking(messages, 'second ', makeId, NOW);
+    messages = applyOnThinking(messages, 'third.', makeId, NOW);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].reasoning).toBe('First second third.');
+  });
+
+  test('does not re-segment when reasoning interleaves with prose', () => {
+    // Reasoning renders in its own card above the bubble, so it must never
+    // split one reply into two message segments the way text-after-tools does.
+    let messages: ChatMessage[] = [makeAssistant()];
+    messages = applyOnText(messages, 'Hello ', makeId, NOW);
+    messages = applyOnThinking(messages, 'thinking...', makeId, NOW);
+    messages = applyOnText(messages, 'world', makeId, NOW);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toBe('Hello world');
+    expect(messages[0].reasoning).toBe('thinking...');
+  });
+
+  test('opens a new streaming message when none is active (reconnect case)', () => {
+    const prev: ChatMessage[] = [makeAssistant({ isStreaming: false, content: 'done' })];
+    const result = applyOnThinking(prev, 'fresh thought', makeId, NOW);
+
+    expect(result).toHaveLength(2);
+    expect(result[1].reasoning).toBe('fresh thought');
+    expect(result[1].isStreaming).toBe(true);
+    expect(result[1].content).toBe('');
+  });
+
+  test('does not attach reasoning to a user message', () => {
+    const prev: ChatMessage[] = [{ id: 'u1', role: 'user', content: 'hi', timestamp: NOW }];
+    const result = applyOnThinking(prev, 'thought', makeId, NOW);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].reasoning).toBeUndefined();
+    expect(result[1].role).toBe('assistant');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyOnRunMeta — end-of-turn provider metadata
+// ---------------------------------------------------------------------------
+
+describe('applyOnRunMeta', () => {
+  test('attaches metadata to the last assistant message', () => {
+    const prev: ChatMessage[] = [makeAssistant({ content: 'reply', isStreaming: false })];
+    const result = applyOnRunMeta(prev, { cost: 0.02, model: 'claude-opus-5' });
+
+    expect(result[0].runMeta).toEqual({ cost: 0.02, model: 'claude-opus-5' });
+  });
+
+  test('attaches to the last assistant even when a later user message exists', () => {
+    const prev: ChatMessage[] = [
+      makeAssistant({ content: 'reply', isStreaming: false }),
+      { id: 'u1', role: 'user', content: 'next', timestamp: NOW },
+    ];
+    const result = applyOnRunMeta(prev, { cost: 0.02 });
+
+    expect(result[0].runMeta).toEqual({ cost: 0.02 });
+    expect(result[1].runMeta).toBeUndefined();
+  });
+
+  test('targets the last assistant even after the lock cleared isStreaming', () => {
+    // The `result` chunk can land after `conversation_lock` flipped isStreaming
+    // to false, so this must not require a streaming message.
+    const prev: ChatMessage[] = [makeAssistant({ content: 'reply', isStreaming: false })];
+    const result = applyOnRunMeta(prev, { stopReason: 'max_tokens' });
+
+    expect(result[0].runMeta?.stopReason).toBe('max_tokens');
+  });
+
+  test('merges rather than replacing an existing runMeta', () => {
+    const prev: ChatMessage[] = [
+      makeAssistant({ content: 'reply', isStreaming: false, runMeta: { model: 'pi' } }),
+    ];
+    const result = applyOnRunMeta(prev, { cost: 0.5 });
+
+    expect(result[0].runMeta).toEqual({ model: 'pi', cost: 0.5 });
+  });
+
+  test('returns prev unchanged when no renderable field is present', () => {
+    const prev: ChatMessage[] = [makeAssistant({ content: 'reply' })];
+    const result = applyOnRunMeta(prev, {});
+
+    expect(result).toBe(prev);
+  });
+
+  test('returns prev unchanged when there is no assistant message', () => {
+    const prev: ChatMessage[] = [{ id: 'u1', role: 'user', content: 'hi', timestamp: NOW }];
+    const result = applyOnRunMeta(prev, { cost: 0.02 });
+
+    expect(result).toBe(prev);
   });
 });

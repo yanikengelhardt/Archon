@@ -72,13 +72,28 @@ export interface ToolResultEvent extends BaseSSEEvent {
   duration: number;
 }
 
-// Session metadata
+// Model reasoning for the turn in flight. Live-only — the server does not
+// persist it, so a reloaded conversation has no reasoning to show.
+export interface ThinkingEvent extends BaseSSEEvent {
+  type: 'thinking';
+  content: string;
+}
+
+/**
+ * End-of-turn metadata from the provider's `result` chunk.
+ *
+ * Every field is optional because coverage differs per provider: Pi reports
+ * tokens and a stop reason, Claude adds cost and turn count, Codex omits the
+ * session id. The client renders whichever fields arrive.
+ */
 export interface SessionInfoEvent extends BaseSSEEvent {
   type: 'session_info';
-  sessionId: string;
+  sessionId?: string;
   cost?: number;
-  tokensIn?: number;
-  tokensOut?: number;
+  tokens?: { input: number; output: number; total?: number; cost?: number };
+  model?: string;
+  stopReason?: string;
+  numTurns?: number;
 }
 
 // Conversation lock status
@@ -238,6 +253,7 @@ export type SSEEvent =
   | TextEvent
   | ToolCallEvent
   | ToolResultEvent
+  | ThinkingEvent
   | SessionInfoEvent
   | ConversationLockEvent
   | ErrorEvent
@@ -269,11 +285,30 @@ export interface FileAttachment {
   size: number;
 }
 
+/**
+ * End-of-turn provider metadata attached to the assistant message that closed
+ * the turn. Mirrors `SessionInfoEvent` minus the transport fields.
+ */
+export interface RunMetaDisplay {
+  cost?: number;
+  tokens?: { input: number; output: number; total?: number; cost?: number };
+  model?: string;
+  stopReason?: string;
+  numTurns?: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   toolCalls?: ToolCallDisplay[];
+  /**
+   * Accumulated reasoning deltas for this turn. Live-only: never returned by
+   * the messages API, so it is absent on any message loaded from history.
+   */
+  reasoning?: string;
+  /** Provider metadata for the turn this message closed. */
+  runMeta?: RunMetaDisplay;
   error?: ErrorDisplay;
   timestamp: number;
   isStreaming?: boolean;

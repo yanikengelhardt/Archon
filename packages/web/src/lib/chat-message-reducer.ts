@@ -6,7 +6,7 @@
  * the same output with no side effects.
  */
 
-import type { ChatMessage, MessageCategory, TextEventMeta } from './types';
+import type { ChatMessage, MessageCategory, RunMetaDisplay, TextEventMeta } from './types';
 
 /**
  * Whether a message is workflow-status narration that deserves its own bubble.
@@ -154,4 +154,58 @@ export function applyOnText(
 
   // Rule 6: no active streaming assistant message → create a new one.
   return [...prev, makeStreamingMessage(makeId(), content, now, true, meta)];
+}
+
+/**
+ * Applies a reasoning delta to the current message list.
+ *
+ * Reasoning belongs to the turn in flight, so it attaches to the open
+ * streaming assistant message — which `ChatInterface` always creates as an
+ * empty placeholder the moment the user sends, meaning the common path appends
+ * to an existing message. Rule 6 of `applyOnText` is mirrored here for the
+ * reconnect case where no placeholder exists.
+ *
+ * Deliberately does NOT close or open a message boundary the way `applyOnText`
+ * does: reasoning renders in its own card above the bubble, so interleaving it
+ * with prose must not re-segment the transcript.
+ */
+export function applyOnThinking(
+  prev: ChatMessage[],
+  content: string,
+  makeId: () => string = () => `msg-${String(Date.now())}`,
+  now: number = Date.now()
+): ChatMessage[] {
+  const last = prev[prev.length - 1];
+  if (last?.role === 'assistant' && last.isStreaming) {
+    return [...prev.slice(0, -1), { ...last, reasoning: (last.reasoning ?? '') + content }];
+  }
+  return [...prev, { ...makeStreamingMessage(makeId(), '', now, true), reasoning: content }];
+}
+
+/**
+ * Attaches end-of-turn provider metadata to the message that closed the turn.
+ *
+ * Targets the last assistant message rather than the streaming one: the
+ * `result` chunk can land after `conversation_lock` has already flipped
+ * `isStreaming` to false. Returns `prev` unchanged when the event carries no
+ * renderable field (a bare `session_info` with only a session id) or when
+ * there is no assistant message to attach to.
+ */
+export function applyOnRunMeta(prev: ChatMessage[], meta: RunMetaDisplay): ChatMessage[] {
+  const hasContent =
+    meta.cost !== undefined ||
+    meta.tokens !== undefined ||
+    meta.model !== undefined ||
+    meta.stopReason !== undefined ||
+    meta.numTurns !== undefined;
+  if (!hasContent) return prev;
+
+  for (let i = prev.length - 1; i >= 0; i--) {
+    if (prev[i].role === 'assistant') {
+      const updated = [...prev];
+      updated[i] = { ...prev[i], runMeta: { ...prev[i].runMeta, ...meta } };
+      return updated;
+    }
+  }
+  return prev;
 }
