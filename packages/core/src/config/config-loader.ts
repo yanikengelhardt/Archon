@@ -240,12 +240,12 @@ const DEFAULT_CONFIG_CONTENT = `# Archon Global Configuration
 # entry serves both gpt-5.6-luna and Pi's openai-codex/gpt-5.6-luna ref.
 # Without creditsPerUsd, or for a model with no entry, no credit figure is shown.
 # pricing:
-#   creditsPerUsd: 14.28
+#   creditsPerUsd: 14.285714285714285   # 1 / 0.07
 #   models:
 #     gpt-5.6-luna:
-#       cachedInput: 0.075
-#       input: 0.752
-#       output: 4.513
+#       cachedInput: 0.035
+#       input: 0.35
+#       output: 2.10
 
 # Streaming mode per platform (stream or batch)
 # streaming:

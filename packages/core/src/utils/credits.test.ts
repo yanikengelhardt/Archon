@@ -2,35 +2,53 @@ import { describe, test, expect } from 'bun:test';
 import { estimateCredits, findModelRates, formatCredits } from './credits';
 import type { PricingConfig } from '../config/config-types';
 
+/**
+ * The operator's live rate card, in USD per 1M tokens.
+ *
+ * Every bucket of every model prices at exactly $0.07 per credit, so
+ * `creditsPerUsd` is the exact reciprocal — 14.28 is a rounding that yields
+ * 4.998 credits per 1M Luna input tokens where the rate card says 5.
+ */
 const LUNA: PricingConfig = {
-  creditsPerUsd: 14.28,
+  creditsPerUsd: 1 / 0.07,
   models: {
-    'gpt-5.6-luna': { cachedInput: 0.075, input: 0.752, output: 4.513 },
+    'gpt-5.6-luna': { cachedInput: 0.035, input: 0.35, output: 2.1 },
+    'gpt-5.6-terra': { cachedInput: 0.35, input: 3.5, output: 21 },
+    'gpt-5.6-sol': { cachedInput: 0.7, input: 7, output: 35 },
+    'gpt-5.4': { cachedInput: 0.4375, input: 4.375, output: 26.25 },
+    'gpt-5.4-mini': { cachedInput: 0.13125, input: 1.3125, output: 7.91 },
   },
 };
 
-describe('estimateCredits — rates reproduce the published tokens-per-credit table', () => {
-  // The operator's rate card states tokens-per-credit alongside $/1M. Storing
-  // only the dollar rates plus creditsPerUsd must reproduce those figures, or
-  // the two halves of the card have drifted.
-  const approxOneCredit = (credits: number): void => {
-    expect(credits).toBeGreaterThan(0.99);
-    expect(credits).toBeLessThan(1.01);
+describe('estimateCredits — reproduces the operator rate card', () => {
+  // The rate card is published in two units: USD per 1M tokens AND credits per
+  // 1M tokens. Only the dollars are configured, so credits must fall out of the
+  // conversion exactly. A drift here means the two halves of the card disagree.
+  const M = 1_000_000;
+  const CREDITS_PER_MILLION: Record<string, [number, number, number]> = {
+    'gpt-5.6-luna': [5, 0.5, 30],
+    'gpt-5.6-terra': [50, 5, 300],
+    'gpt-5.6-sol': [100, 10, 500],
+    'gpt-5.4': [62.5, 6.25, 375],
+    'gpt-5.4-mini': [18.75, 1.875, 113],
   };
 
-  test('93,065 fresh input tokens ≈ 1 credit', () => {
-    const e = estimateCredits({ input: 93_065, output: 0 }, 'gpt-5.6-luna', LUNA);
-    approxOneCredit(e!.credits);
-  });
+  for (const [model, [input, cached, output]] of Object.entries(CREDITS_PER_MILLION)) {
+    test(`${model}: 1M tokens per bucket matches the published credit figures`, () => {
+      expect(estimateCredits({ input: M, output: 0 }, model, LUNA)!.credits).toBeCloseTo(input, 9);
+      expect(estimateCredits({ input: 0, output: 0, cached: M }, model, LUNA)!.credits).toBeCloseTo(
+        cached,
+        9
+      );
+      expect(estimateCredits({ input: 0, output: M }, model, LUNA)!.credits).toBeCloseTo(output, 9);
+    });
+  }
 
-  test('930,647 cached input tokens ≈ 1 credit', () => {
-    const e = estimateCredits({ input: 0, output: 0, cached: 930_647 }, 'gpt-5.6-luna', LUNA);
-    approxOneCredit(e!.credits);
-  });
-
-  test('15,511 output tokens ≈ 1 credit', () => {
-    const e = estimateCredits({ input: 0, output: 15_511 }, 'gpt-5.6-luna', LUNA);
-    approxOneCredit(e!.credits);
+  test('every model prices at exactly $0.07 per credit', () => {
+    for (const model of Object.keys(CREDITS_PER_MILLION)) {
+      const e = estimateCredits({ input: 12_345, output: 678, cached: 90_123 }, model, LUNA)!;
+      expect(e.usd / e.credits).toBeCloseTo(0.07, 12);
+    }
   });
 });
 
@@ -42,8 +60,8 @@ describe('estimateCredits — bucket handling', () => {
       LUNA
     );
     const freshOnly = estimateCredits({ input: 100_000, output: 0 }, 'gpt-5.6-luna', LUNA);
-    // 0.075 vs 0.752 per 1M — roughly a 10x discount.
-    expect(freshOnly!.usd / cachedOnly!.usd).toBeCloseTo(0.752 / 0.075, 5);
+    // 0.035 vs 0.35 per 1M — exactly a 10x discount across this rate card.
+    expect(freshOnly!.usd / cachedOnly!.usd).toBeCloseTo(10, 9);
   });
 
   test('does not double-charge cached tokens as input', () => {
@@ -70,7 +88,7 @@ describe('estimateCredits — bucket handling', () => {
 
   test('bills cacheWrite at the input rate by default', () => {
     const e = estimateCredits({ input: 0, output: 0, cacheWrite: 1_000_000 }, 'gpt-5.6-luna', LUNA);
-    expect(e!.usd).toBeCloseTo(0.752, 6);
+    expect(e!.usd).toBeCloseTo(0.35, 6);
   });
 
   test('honours an explicit cacheWrite premium', () => {
@@ -92,8 +110,8 @@ describe('estimateCredits — credits and USD are the same quantity', () => {
     )!;
     // credits = usd * creditsPerUsd, so dividing back must return the dollars.
     expect(e.credits / LUNA.creditsPerUsd!).toBeCloseTo(e.usd, 10);
-    // And one credit is worth 1/14.28 ≈ $0.0700.
-    expect(e.usd / e.credits).toBeCloseTo(1 / 14.28, 10);
+    // And one credit is worth exactly $0.07.
+    expect(e.usd / e.credits).toBeCloseTo(0.07, 12);
   });
 
   test('scales linearly, so doubling usage doubles both units', () => {
@@ -106,7 +124,10 @@ describe('estimateCredits — credits and USD are the same quantity', () => {
 
 describe('estimateCredits — refuses to guess', () => {
   test('returns null for an unpriced model rather than a confident zero', () => {
-    expect(estimateCredits({ input: 100, output: 10 }, 'gpt-5.6-sol', LUNA)).toBeNull();
+    // Must be a model genuinely absent from the rate card — an unpriced model
+    // must never silently borrow a priced one's rates.
+    expect(estimateCredits({ input: 100, output: 10 }, 'claude-opus-5', LUNA)).toBeNull();
+    expect(estimateCredits({ input: 100, output: 10 }, 'ft/coder', LUNA)).toBeNull();
   });
 
   test('returns null when pricing is unconfigured', () => {
