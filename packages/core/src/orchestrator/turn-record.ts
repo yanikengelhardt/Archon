@@ -43,6 +43,8 @@ export interface TurnRunMeta {
   model?: string;
   stopReason?: string;
   credits?: number;
+  /** Credits expressed in USD, from the same configured rates. */
+  estimatedUsd?: number;
 }
 
 /** Metadata payload handed to `addMessage` for a non-web assistant turn. */
@@ -131,6 +133,7 @@ export class TurnRecord {
       ...(meta.model !== undefined ? { model: meta.model } : {}),
       ...(meta.stopReason !== undefined ? { stopReason: meta.stopReason } : {}),
       ...(meta.credits !== undefined ? { credits: meta.credits } : {}),
+      ...(meta.estimatedUsd !== undefined ? { estimatedUsd: meta.estimatedUsd } : {}),
     };
     if (Object.keys(cleaned).length > 0) this.runMeta = cleaned;
   }

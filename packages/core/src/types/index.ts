@@ -184,6 +184,8 @@ export interface IPlatformAdapter {
       model?: string;
       /** Estimated spend in credits, priced from `pricing:` in config. */
       credits?: number;
+      /** The same estimate in USD, from the same rates. Not the provider's `cost`. */
+      estimatedUsd?: number;
     }
   ): Promise<void>;
 }

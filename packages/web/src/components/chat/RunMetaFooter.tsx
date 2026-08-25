@@ -24,6 +24,15 @@ function formatCreditCount(credits: number): string {
   return credits.toFixed(3);
 }
 
+/**
+ * Render an estimated USD figure. Guards the "$0.0000" case: a real but tiny
+ * spend must not print as zero, which would read as free.
+ */
+function formatEstimatedUsd(usd: number): string {
+  if (usd > 0 && usd < 0.0001) return '<$0.0001';
+  return `$${usd.toFixed(4)}`;
+}
+
 function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
@@ -49,7 +58,13 @@ export function RunMetaFooter({ meta }: { meta: RunMetaDisplay }): React.ReactEl
   // subscription-backed backend the reported cost is ~0, so showing both would
   // read as a contradiction. Mirrors the Slack footer's precedence.
   if (typeof meta.credits === 'number' && Number.isFinite(meta.credits)) {
-    parts.push(`~${formatCreditCount(meta.credits)} cr`);
+    // One quantity, two units, both from the configured rates — so the USD
+    // figure is parenthetical rather than its own `·` segment.
+    const usd =
+      typeof meta.estimatedUsd === 'number' && Number.isFinite(meta.estimatedUsd)
+        ? ` (${formatEstimatedUsd(meta.estimatedUsd)})`
+        : '';
+    parts.push(`~${formatCreditCount(meta.credits)} cr${usd}`);
   } else if (typeof meta.cost === 'number' && Number.isFinite(meta.cost)) {
     parts.push(`$${meta.cost.toFixed(4)}`);
   }

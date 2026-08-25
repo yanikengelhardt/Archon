@@ -83,6 +83,27 @@ describe('estimateCredits — bucket handling', () => {
   });
 });
 
+describe('estimateCredits — credits and USD are the same quantity', () => {
+  test('usd and credits agree with the stated 1 credit = $0.07 conversion', () => {
+    const e = estimateCredits(
+      { input: 50_000, output: 3_000, cached: 200_000 },
+      'gpt-5.6-luna',
+      LUNA
+    )!;
+    // credits = usd * creditsPerUsd, so dividing back must return the dollars.
+    expect(e.credits / LUNA.creditsPerUsd!).toBeCloseTo(e.usd, 10);
+    // And one credit is worth 1/14.28 ≈ $0.0700.
+    expect(e.usd / e.credits).toBeCloseTo(1 / 14.28, 10);
+  });
+
+  test('scales linearly, so doubling usage doubles both units', () => {
+    const one = estimateCredits({ input: 1_000, output: 100 }, 'gpt-5.6-luna', LUNA)!;
+    const two = estimateCredits({ input: 2_000, output: 200 }, 'gpt-5.6-luna', LUNA)!;
+    expect(two.usd).toBeCloseTo(one.usd * 2, 10);
+    expect(two.credits).toBeCloseTo(one.credits * 2, 10);
+  });
+});
+
 describe('estimateCredits — refuses to guess', () => {
   test('returns null for an unpriced model rather than a confident zero', () => {
     expect(estimateCredits({ input: 100, output: 10 }, 'gpt-5.6-sol', LUNA)).toBeNull();

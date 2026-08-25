@@ -198,7 +198,8 @@ export function applyOnRunMeta(prev: ChatMessage[], meta: RunMetaDisplay): ChatM
     meta.model !== undefined ||
     meta.stopReason !== undefined ||
     meta.numTurns !== undefined ||
-    meta.credits !== undefined;
+    meta.credits !== undefined ||
+    meta.estimatedUsd !== undefined;
   if (!hasContent) return prev;
 
   for (let i = prev.length - 1; i >= 0; i--) {

@@ -547,6 +547,7 @@ export function ChatInterface({
         stopReason: event.stopReason,
         numTurns: event.numTurns,
         credits: event.credits,
+        estimatedUsd: event.estimatedUsd,
       })
     );
   }, []);

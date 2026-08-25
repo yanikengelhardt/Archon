@@ -76,6 +76,27 @@ describe('formatCostFooter', () => {
     expect(formatCostFooter({ stopReason: 'refusal' })).toBe('_stop: refusal_');
   });
 
+  test('shows the USD equivalent beside credits, as one quantity in two units', () => {
+    expect(
+      formatCostFooter({
+        model: 'gpt-5.6-luna',
+        tokens: { input: 5221, output: 396 },
+        credits: 0.0851,
+        estimatedUsd: 0.005959,
+      })
+    ).toBe('_gpt-5.6-luna · ~0.085 cr ($0.0060) · out: 396_');
+  });
+
+  test('never prints a real spend as $0.0000', () => {
+    expect(formatCostFooter({ model: 'm', credits: 0.0001, estimatedUsd: 0.000007 })).toBe(
+      '_m · ~0.000 cr (<$0.0001)_'
+    );
+  });
+
+  test('omits the parenthetical when no USD estimate accompanies the credits', () => {
+    expect(formatCostFooter({ model: 'm', credits: 1.5 })).toBe('_m · ~1.50 cr_');
+  });
+
   test('shows estimated credits instead of the provider cost', () => {
     // On a subscription-backed backend the reported cost is ~0, so printing
     // both would read as a contradiction. Credits win when present.

@@ -87,6 +87,7 @@ export function formatCostFooter(input: {
   stopReason?: string;
   model?: string;
   credits?: number;
+  estimatedUsd?: number;
 }): string | null {
   const parts: string[] = [];
   if (input.model) parts.push(input.model);
@@ -94,7 +95,14 @@ export function formatCostFooter(input: {
   // provider's cost when available — on a subscription-backed backend the
   // reported cost is ~0, so printing both would read as a contradiction.
   if (typeof input.credits === 'number' && Number.isFinite(input.credits)) {
-    parts.push(`~${formatCredits(input.credits)} cr`);
+    // Credits and the USD figure are ONE quantity in two units, both from the
+    // configured rates — hence the parenthetical rather than a `·` segment,
+    // which the footer uses to separate independent facts.
+    const usd =
+      typeof input.estimatedUsd === 'number' && Number.isFinite(input.estimatedUsd)
+        ? ` (${formatEstimatedUsd(input.estimatedUsd)})`
+        : '';
+    parts.push(`~${formatCredits(input.credits)} cr${usd}`);
   } else if (typeof input.cost === 'number' && Number.isFinite(input.cost)) {
     parts.push(`$${input.cost.toFixed(4)}`);
   }
@@ -110,6 +118,15 @@ export function formatCostFooter(input: {
   }
   if (parts.length === 0) return null;
   return `_${parts.join(' · ')}_`;
+}
+
+/**
+ * Render an estimated USD figure. Guards the "$0.0000" case: a real but tiny
+ * spend must not print as zero, which would read as free.
+ */
+function formatEstimatedUsd(usd: number): string {
+  if (usd > 0 && usd < 0.0001) return '<$0.0001';
+  return `$${usd.toFixed(4)}`;
 }
 
 function formatTokenCount(n: number): string {

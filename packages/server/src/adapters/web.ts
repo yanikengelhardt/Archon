@@ -270,12 +270,14 @@ export class WebAdapter implements IWebPlatformAdapter {
       stopReason?: string;
       model?: string;
       credits?: number;
+      estimatedUsd?: number;
     }
   ): Promise<void> {
     if (info.credits === undefined) return;
     const event = JSON.stringify({
       type: 'session_info',
       credits: info.credits,
+      ...(info.estimatedUsd !== undefined ? { estimatedUsd: info.estimatedUsd } : {}),
       timestamp: Date.now(),
     });
     await this.transport.emit(conversationId, event);

@@ -23,11 +23,17 @@ import { estimateCredits } from '../utils/credits';
 
 /** End-of-turn metadata shared by the persist path and the footer seam. */
 interface TurnResultInfo {
+  /** Cost as reported by the provider, in USD. Often ~0 on subscription backends. */
   cost?: number;
   tokens?: TokenUsage;
   stopReason?: string;
   model?: string;
   credits?: number;
+  /**
+   * The same spend as `credits`, in USD, from the SAME configured rates.
+   * Distinct from `cost`: that is the provider's own figure, this is ours.
+   */
+  estimatedUsd?: number;
 }
 import * as db from '../db/conversations';
 import * as codebaseDb from '../db/codebases';
@@ -2874,9 +2880,7 @@ async function handleBatchMode(
 async function maybeSendResultFooter(
   platform: IPlatformAdapter,
   conversationId: string,
-  info:
-    | { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string; credits?: number }
-    | undefined
+  info: TurnResultInfo | undefined
 ): Promise<void> {
   if (!info) return;
   if (info.cost === undefined && info.tokens === undefined) return;
@@ -2904,7 +2908,7 @@ async function withTurnCredits(
   try {
     const config = await loadConfig(cwd);
     const estimate = estimateCredits(result.tokens, result.model, config.pricing);
-    return estimate ? { ...result, credits: estimate.credits } : result;
+    return estimate ? { ...result, credits: estimate.credits, estimatedUsd: estimate.usd } : result;
   } catch (error) {
     getLog().debug({ err: toError(error) }, 'orchestrator.credit_estimate_failed');
     return result;
