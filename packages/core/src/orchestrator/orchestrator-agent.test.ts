@@ -4888,6 +4888,37 @@ describe('message persistence for non-web platforms', () => {
     expect(metadata.toolCalls?.[0].output).toBe('a.ts');
   });
 
+  test('resolves the model from resolvedModel.id, which is where providers put it', async () => {
+    // Regression: lastResult read only the flat `model` field, but NO provider
+    // populates it — Claude, Pi and OpenCode all report the concrete model as
+    // `resolvedModel.id`. The footer therefore never named a model, and credit
+    // estimation (which keys rates by model) could never resolve a rate.
+    mockSendQuery.mockImplementation(async function* () {
+      yield { type: 'assistant', content: 'hello back' };
+      yield {
+        type: 'result',
+        sessionId: 'sess-1',
+        tokens: { input: 100, output: 20 },
+        resolvedModel: { id: 'openai-codex/gpt-5.6-luna' },
+      };
+    });
+
+    const platform: IPlatformAdapter = {
+      ...makePlatform(),
+      getPlatformType: mock(() => 'slack'),
+      getStreamingMode: mock(() => 'batch' as const),
+    };
+
+    await handleMessage(platform, 'conv-1', 'what is this repo?');
+
+    const assistantCall = mockAddMessage.mock.calls.find(
+      (c: unknown[]) => c[1] === 'assistant'
+    ) as [string, string, string, Record<string, unknown>];
+    const metadata = assistantCall[3] as { runMeta?: { model?: string } };
+
+    expect(metadata.runMeta?.model).toBe('openai-codex/gpt-5.6-luna');
+  });
+
   test('does NOT persist a user row for a deterministic slash command (no orphan)', async () => {
     const platform: IPlatformAdapter = {
       ...makePlatform(),

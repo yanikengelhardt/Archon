@@ -2461,7 +2461,12 @@ async function handleStreamMode(
         cost: msg.cost,
         tokens: msg.tokens,
         stopReason: msg.stopReason,
-        model: msg.model,
+        // No provider actually populates the flat `model` field — Claude, Pi
+        // and OpenCode all report the concrete model as `resolvedModel.id`.
+        // Reading only `model` left this undefined for every provider, which
+        // is why the footer never named a model and why credit estimation,
+        // which keys rates by model, could never resolve a rate.
+        model: msg.model ?? msg.resolvedModel?.id,
       };
     }
   }
@@ -2723,7 +2728,12 @@ async function handleBatchMode(
         cost: msg.cost,
         tokens: msg.tokens,
         stopReason: msg.stopReason,
-        model: msg.model,
+        // No provider actually populates the flat `model` field — Claude, Pi
+        // and OpenCode all report the concrete model as `resolvedModel.id`.
+        // Reading only `model` left this undefined for every provider, which
+        // is why the footer never named a model and why credit estimation,
+        // which keys rates by model, could never resolve a rate.
+        model: msg.model ?? msg.resolvedModel?.id,
       };
     }
 
