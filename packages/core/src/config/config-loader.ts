@@ -37,6 +37,7 @@ import type {
   AssistantDefaultsConfig,
   RawAliasesConfig,
   RawTiersConfig,
+  PricingConfig,
 } from './config-types';
 import { createLogger } from '@archon/paths';
 import {
@@ -95,6 +96,25 @@ function mergeTiers(
 ): RawTiersConfig | undefined {
   if (!base && !overrides) return undefined;
   return { ...base, ...overrides };
+}
+
+/**
+ * Merge pricing config. `creditsPerUsd` is replaced wholesale by the override;
+ * `models` merges per key so a repo can re-price one model without restating
+ * the whole table.
+ */
+function mergePricing(
+  base: PricingConfig | undefined,
+  overrides: PricingConfig | undefined
+): PricingConfig | undefined {
+  if (!base && !overrides) return undefined;
+  const models =
+    base?.models || overrides?.models ? { ...base?.models, ...overrides?.models } : undefined;
+  const creditsPerUsd = overrides?.creditsPerUsd ?? base?.creditsPerUsd;
+  return {
+    ...(creditsPerUsd !== undefined ? { creditsPerUsd } : {}),
+    ...(models ? { models } : {}),
+  };
 }
 
 function mergeAssistantDefaults(
@@ -212,6 +232,20 @@ const DEFAULT_CONFIG_CONTENT = `# Archon Global Configuration
 #   large: { provider: claude, model: opus }
 #   medium: { provider: codex, model: gpt-5.5, effort: high }
 #   small: { provider: pi, model: minimax-m3 }
+
+# Custom token pricing, used to estimate spend in credits per turn.
+# Rates are USD per 1,000,000 tokens. The buckets are disjoint: input counts
+# only FRESH tokens, so a cached token is priced once, at cachedInput.
+# Model lookup tries the exact string, then the part after the last "/", so one
+# entry serves both gpt-5.6-luna and Pi's openai-codex/gpt-5.6-luna ref.
+# Without creditsPerUsd, or for a model with no entry, no credit figure is shown.
+# pricing:
+#   creditsPerUsd: 14.28
+#   models:
+#     gpt-5.6-luna:
+#       cachedInput: 0.075
+#       input: 0.752
+#       output: 4.513
 
 # Streaming mode per platform (stream or batch)
 # streaming:
@@ -494,6 +528,7 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
 
   result.aliases = mergeAliases(result.aliases, global.aliases);
   result.tiers = mergeTiers(result.tiers, global.tiers);
+  result.pricing = mergePricing(result.pricing, global.pricing);
 
   // Streaming preferences
   if (global.streaming) {
@@ -556,6 +591,7 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
 
   result.aliases = mergeAliases(result.aliases, repo.aliases);
   result.tiers = mergeTiers(result.tiers, repo.tiers);
+  result.pricing = mergePricing(result.pricing, repo.pricing);
 
   // Commands config
   if (repo.commands) {

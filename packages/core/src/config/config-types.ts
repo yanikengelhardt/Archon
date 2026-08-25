@@ -32,6 +32,52 @@ export type {
 export type { RawAliasesConfig, RawTiersConfig };
 
 /**
+ * Per-model token rates in USD per 1,000,000 tokens.
+ *
+ * The buckets mirror `TokenUsage` and are DISJOINT — every provider normalises
+ * `input` to fresh (non-cached) tokens, so a cached token is priced once, at
+ * `cachedInput`, never also at `input`.
+ */
+export interface ModelRates {
+  /** USD per 1M fresh input tokens. */
+  input: number;
+  /** USD per 1M output tokens. */
+  output: number;
+  /**
+   * USD per 1M cached input tokens. Defaults to the `input` rate when omitted
+   * — conservative, since a provider with no caching discount bills cached
+   * tokens as ordinary input. Set it explicitly to claim the discount.
+   */
+  cachedInput?: number;
+  /**
+   * USD per 1M cache-write tokens. Defaults to the `input` rate, which is
+   * correct for OpenAI-shaped providers (a cache write is ordinary input that
+   * happens to get stored). Anthropic charges a premium and should set it.
+   */
+  cacheWrite?: number;
+}
+
+/**
+ * Custom token pricing, used to estimate spend in credits for turns whose
+ * provider does not report a usable cost — a subscription-backed backend
+ * reports ~0, and negotiated rates differ from list price anyway.
+ *
+ * Rates are authored per model; `creditsPerUsd` converts the resulting dollar
+ * figure into credits. Storing dollars plus one conversion factor (rather than
+ * a tokens-per-credit column per bucket) keeps the two from drifting apart.
+ */
+export interface PricingConfig {
+  /** Credits per 1 USD. Omitted means credits are not estimated. */
+  creditsPerUsd?: number;
+  /**
+   * Rates keyed by model name. Lookup tries the resolved model string exactly,
+   * then the segment after the last `/` — so `gpt-5.6-luna` matches both a
+   * bare Codex model and Pi's `openai-codex/gpt-5.6-luna` ref.
+   */
+  models?: Record<string, ModelRates>;
+}
+
+/**
  * Intersection type: generic `ProviderDefaultsMap` (any string key) with
  * typed built-in entries.
  *
@@ -136,6 +182,9 @@ export interface GlobalConfig {
    */
   tiers?: RawTiersConfig;
 
+  /** Custom token pricing used to estimate credits spent per turn. */
+  pricing?: PricingConfig;
+
   /**
    * Platform streaming preferences (can be overridden per conversation)
    */
@@ -219,6 +268,9 @@ export interface RepoConfig {
 
   /** Repo-level model tier presets — override global tiers with same name. */
   tiers?: RawTiersConfig;
+
+  /** Repo-level pricing — overrides global rates per model key. */
+  pricing?: PricingConfig;
 
   /**
    * Commands configuration
@@ -413,6 +465,9 @@ export interface MergedConfig {
    * Undefined when no tiers are configured anywhere.
    */
   tiers?: RawTiersConfig;
+
+  /** Merged pricing (repo > global, per model key). */
+  pricing?: PricingConfig;
   streaming: {
     telegram: 'stream' | 'batch';
     discord: 'stream' | 'batch';

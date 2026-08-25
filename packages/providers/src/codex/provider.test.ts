@@ -302,6 +302,65 @@ describe('CodexProvider', () => {
       });
     });
 
+    test('subtracts cached tokens from input so the buckets stay disjoint', async () => {
+      // The Codex SDK follows OpenAI's convention: input_tokens INCLUDES
+      // cached_input_tokens. Archon's TokenUsage.input means FRESH input only
+      // (Pi already normalises this way), so without the subtraction cached
+      // tokens get billed twice — once at the cached rate, once as input.
+      mockRunStreamed.mockResolvedValue({
+        events: (async function* () {
+          yield { type: 'item.completed', item: { type: 'agent_message', text: 'hi' } };
+          yield {
+            type: 'turn.completed',
+            usage: {
+              input_tokens: 50_000,
+              cached_input_tokens: 48_000,
+              cache_write_input_tokens: 0,
+              output_tokens: 700,
+              reasoning_output_tokens: 0,
+            },
+          };
+        })(),
+      });
+
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test prompt', '/workspace')) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks[chunks.length - 1]).toEqual({
+        type: 'result',
+        sessionId: 'new-thread-id',
+        tokens: { input: 2_000, output: 700, cached: 48_000 },
+      });
+    });
+
+    test('never reports negative input when cached exceeds the reported total', async () => {
+      mockRunStreamed.mockResolvedValue({
+        events: (async function* () {
+          yield { type: 'item.completed', item: { type: 'agent_message', text: 'hi' } };
+          yield {
+            type: 'turn.completed',
+            usage: {
+              input_tokens: 100,
+              cached_input_tokens: 500,
+              cache_write_input_tokens: 0,
+              output_tokens: 10,
+              reasoning_output_tokens: 0,
+            },
+          };
+        })(),
+      });
+
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test prompt', '/workspace')) {
+        chunks.push(chunk);
+      }
+
+      const result = chunks[chunks.length - 1] as { tokens: { input: number } };
+      expect(result.tokens.input).toBe(0);
+    });
+
     test('captures the new-thread id from the thread.started event (resumable sessionId)', async () => {
       // The real Codex SDK assigns a NEW thread's id during the run, via the
       // thread.started event — not synchronously on startThread(). Simulate a

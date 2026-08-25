@@ -6,6 +6,7 @@
  */
 import type { types } from '@slack/bolt';
 import type { TokenUsage } from '@archon/providers/types';
+import { formatCredits } from '@archon/core/utils/credits';
 
 type KnownBlock = types.KnownBlock;
 
@@ -85,10 +86,16 @@ export function formatCostFooter(input: {
   tokens?: TokenUsage;
   stopReason?: string;
   model?: string;
+  credits?: number;
 }): string | null {
   const parts: string[] = [];
   if (input.model) parts.push(input.model);
-  if (typeof input.cost === 'number' && Number.isFinite(input.cost)) {
+  // Credits come from locally-configured rates and are shown INSTEAD of the
+  // provider's cost when available — on a subscription-backed backend the
+  // reported cost is ~0, so printing both would read as a contradiction.
+  if (typeof input.credits === 'number' && Number.isFinite(input.credits)) {
+    parts.push(`~${formatCredits(input.credits)} cr`);
+  } else if (typeof input.cost === 'number' && Number.isFinite(input.cost)) {
     parts.push(`$${input.cost.toFixed(4)}`);
   }
   if (input.tokens) {

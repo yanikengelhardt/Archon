@@ -16,6 +16,7 @@
  * half the platforms.
  */
 import { createLogger } from '@archon/paths';
+import type { TokenUsage } from '@archon/providers/types';
 
 let cachedLog: ReturnType<typeof createLogger> | undefined;
 function getLog(): ReturnType<typeof createLogger> {
@@ -31,10 +32,24 @@ export interface TurnToolCall {
   output?: string;
 }
 
+/**
+ * End-of-turn provider metadata, persisted so a non-web turn shows its model,
+ * spend and token counts when reviewed in the Web UI. The web adapter delivers
+ * the same fields live over SSE instead.
+ */
+export interface TurnRunMeta {
+  cost?: number;
+  tokens?: TokenUsage;
+  model?: string;
+  stopReason?: string;
+  credits?: number;
+}
+
 /** Metadata payload handed to `addMessage` for a non-web assistant turn. */
 export interface TurnMetadata {
   toolCalls?: TurnToolCall[];
   reasoning?: string;
+  runMeta?: TurnRunMeta;
 }
 
 /**
@@ -58,6 +73,7 @@ export class TurnRecord {
   private reasoningParts: string[] = [];
   private reasoningChars = 0;
   private reasoningTruncated = false;
+  private runMeta: TurnRunMeta | undefined;
 
   /** Record a tool invocation. `now` is injectable so tests stay deterministic. */
   recordTool(
@@ -104,6 +120,21 @@ export class TurnRecord {
     match.duration = now - match.startedAt;
   }
 
+  /**
+   * Attach end-of-turn metadata. Fields with no value are dropped so the
+   * persisted object never carries explicit `undefined` keys through JSON.
+   */
+  setRunMeta(meta: TurnRunMeta): void {
+    const cleaned: TurnRunMeta = {
+      ...(meta.cost !== undefined ? { cost: meta.cost } : {}),
+      ...(meta.tokens !== undefined ? { tokens: meta.tokens } : {}),
+      ...(meta.model !== undefined ? { model: meta.model } : {}),
+      ...(meta.stopReason !== undefined ? { stopReason: meta.stopReason } : {}),
+      ...(meta.credits !== undefined ? { credits: meta.credits } : {}),
+    };
+    if (Object.keys(cleaned).length > 0) this.runMeta = cleaned;
+  }
+
   /** Append a reasoning delta, stopping at the cap. */
   recordReasoning(content: string): void {
     if (this.reasoningTruncated) return;
@@ -135,6 +166,7 @@ export class TurnRecord {
     return {
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(this.reasoningParts.length > 0 ? { reasoning: this.reasoningParts.join('') } : {}),
+      ...(this.runMeta ? { runMeta: this.runMeta } : {}),
     };
   }
 }

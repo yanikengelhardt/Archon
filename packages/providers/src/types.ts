@@ -167,8 +167,19 @@ export type ProviderDefaultsMap = Record<string, ProviderDefaults>;
  * Token usage statistics from AI provider responses.
  */
 export interface TokenUsage {
+  /**
+   * FRESH input tokens — those actually processed, EXCLUDING any served from
+   * cache. Providers disagree natively (OpenAI counts cached tokens inside
+   * `input_tokens`, Anthropic reports them separately), so each provider
+   * normalises to this definition. Billing depends on it: cached input is an
+   * order of magnitude cheaper, and counting it twice inflates every estimate.
+   */
   input: number;
   output: number;
+  /** Input tokens served from cache. Disjoint from `input`. */
+  cached?: number;
+  /** Tokens written to cache this turn. Disjoint from `input` and `cached`. */
+  cacheWrite?: number;
   total?: number;
   cost?: number;
 }

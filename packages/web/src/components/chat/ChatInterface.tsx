@@ -34,6 +34,7 @@ import type {
   TextEventMeta,
   WorkflowDispatchEvent,
   SessionInfoEvent,
+  RunMetaDisplay,
 } from '@/lib/types';
 import { applyOnText, applyOnThinking, applyOnRunMeta } from '@/lib/chat-message-reducer';
 import { applySystemStatus } from '@/lib/system-status-reducer';
@@ -56,6 +57,7 @@ function mapMessageRow(row: MessageResponse): ChatMessage {
       output?: string;
     }[];
     reasoning?: string;
+    runMeta?: RunMetaDisplay;
     error?: ErrorDisplay;
     workflowDispatch?: { workerConversationId: string; workflowName: string };
     workflowResult?: { workflowName: string; runId: string };
@@ -92,6 +94,9 @@ function mapMessageRow(row: MessageResponse): ChatMessage {
     // which have no live reasoning surface. Web turns stream it over SSE instead
     // and never persist it, so this is undefined for them.
     reasoning: meta.reasoning,
+    // Same provenance as `reasoning`: persisted for non-web platforms only.
+    // Web turns receive it live via session_info and never persist it.
+    runMeta: meta.runMeta,
     error: meta.error,
     workflowDispatch: meta.workflowDispatch,
     workflowResult: meta.workflowResult,
@@ -541,6 +546,7 @@ export function ChatInterface({
         model: event.model,
         stopReason: event.stopReason,
         numTurns: event.numTurns,
+        credits: event.credits,
       })
     );
   }, []);

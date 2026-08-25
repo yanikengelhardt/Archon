@@ -19,6 +19,16 @@ import type {
 import type { SendQueryOptions, TokenUsage } from '@archon/providers/types';
 import { ConversationNotFoundError, isWebAdapter } from '../types';
 import { TurnRecord } from './turn-record';
+import { estimateCredits } from '../utils/credits';
+
+/** End-of-turn metadata shared by the persist path and the footer seam. */
+interface TurnResultInfo {
+  cost?: number;
+  tokens?: TokenUsage;
+  stopReason?: string;
+  model?: string;
+  credits?: number;
+}
 import * as db from '../db/conversations';
 import * as codebaseDb from '../db/codebases';
 import * as sessionDb from '../db/sessions';
@@ -2513,6 +2523,9 @@ async function handleStreamMode(
   // MessagePersistence buffer; skip it here to avoid double-write (#1182).
   // The turn record rides along as metadata so a Slack/Telegram/CLI turn is
   // inspectable in the Web UI (tool cards + reasoning), not just its final prose.
+  // Price the turn once: the record persists it, and the footer sends it.
+  const resolvedResult = await withTurnCredits(lastResult, cwd);
+  if (resolvedResult) turnRecord.setRunMeta(resolvedResult);
   if (!isWebAdapter(platform) && fullResponse) {
     messageDb
       .addMessage(conversation.id, 'assistant', fullResponse, turnRecord.toMetadata())
@@ -2524,7 +2537,7 @@ async function handleStreamMode(
         );
       });
   }
-  await maybeSendResultFooter(platform, conversationId, lastResult);
+  await maybeSendResultFooter(platform, conversationId, resolvedResult);
   // Anonymous telemetry: one completed direct-chat turn. The workflow-invocation
   // and project-registration paths return above without reaching this — those
   // are covered by workflow_invoked / codebase_registered instead. Platform +
@@ -2803,6 +2816,9 @@ async function handleBatchMode(
   // Persist the assistant reply for non-web platforms so it appears in the
   // Web UI conversation history. The web adapter persists through its
   // MessagePersistence buffer; skip it here to avoid double-write (#1182).
+  // Price the turn once: the record persists it, and the footer sends it.
+  const resolvedResult = await withTurnCredits(lastResult, cwd);
+  if (resolvedResult) turnRecord.setRunMeta(resolvedResult);
   if (!isWebAdapter(platform) && finalMessage) {
     messageDb
       .addMessage(conversation.id, 'assistant', finalMessage, turnRecord.toMetadata())
@@ -2814,7 +2830,7 @@ async function handleBatchMode(
         );
       });
   }
-  await maybeSendResultFooter(platform, conversationId, lastResult);
+  await maybeSendResultFooter(platform, conversationId, resolvedResult);
   // Anonymous telemetry: one completed direct-chat turn (same exclusion
   // rationale as the stream-mode capture in handleStreamMode above).
   captureChatTurn({
@@ -2840,7 +2856,9 @@ async function handleBatchMode(
 async function maybeSendResultFooter(
   platform: IPlatformAdapter,
   conversationId: string,
-  info: { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string } | undefined
+  info:
+    | { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string; credits?: number }
+    | undefined
 ): Promise<void> {
   if (!info) return;
   if (info.cost === undefined && info.tokens === undefined) return;
@@ -2849,6 +2867,29 @@ async function maybeSendResultFooter(
     await platform.sendResultFooter(conversationId, info);
   } catch (error) {
     getLog().warn({ err: toError(error), conversationId }, 'orchestrator.result_footer_failed');
+  }
+}
+
+/**
+ * Price a finished turn against the configured `pricing:` rates.
+ *
+ * Returns an empty object — not a zero — when pricing is unconfigured or the
+ * model has no rate, so the spread above simply adds nothing and the footer
+ * omits credits rather than claiming a confident 0. A pricing failure must
+ * never break a turn, so config errors are swallowed with a debug log.
+ */
+async function withTurnCredits(
+  result: TurnResultInfo | undefined,
+  cwd: string | undefined
+): Promise<TurnResultInfo | undefined> {
+  if (!result) return undefined;
+  try {
+    const config = await loadConfig(cwd);
+    const estimate = estimateCredits(result.tokens, result.model, config.pricing);
+    return estimate ? { ...result, credits: estimate.credits } : result;
+  } catch (error) {
+    getLog().debug({ err: toError(error) }, 'orchestrator.credit_estimate_failed');
+    return result;
   }
 }
 

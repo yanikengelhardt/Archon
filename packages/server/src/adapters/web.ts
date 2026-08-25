@@ -3,7 +3,7 @@
  * Bridge between the orchestrator and the React frontend via Server-Sent Events.
  */
 import type { IWebPlatformAdapter, MessageMetadata } from '@archon/core';
-import type { MessageChunk } from '@archon/providers/types';
+import type { MessageChunk, TokenUsage } from '@archon/providers/types';
 import { createLogger } from '@archon/paths';
 import { MessagePersistence } from './web/persistence';
 import { SSETransport, type SSEWriter } from './web/transport';
@@ -247,6 +247,37 @@ export class WebAdapter implements IWebPlatformAdapter {
       return;
     }
 
+    await this.transport.emit(conversationId, event);
+  }
+
+  /**
+   * Deliver end-of-turn metadata the orchestrator computed for this turn.
+   *
+   * Slack renders this as an italic context line; the web UI needs it as data,
+   * so it goes out as a `session_info` event. The client merges it onto the
+   * message's existing run metadata, which is why emitting only the enrichment
+   * here does not clobber what the `result` chunk already delivered.
+   *
+   * Credits are the reason this exists on the web adapter at all: they are
+   * priced from local config by the orchestrator and never appear on a
+   * provider's result chunk.
+   */
+  async sendResultFooter(
+    conversationId: string,
+    info: {
+      cost?: number;
+      tokens?: TokenUsage;
+      stopReason?: string;
+      model?: string;
+      credits?: number;
+    }
+  ): Promise<void> {
+    if (info.credits === undefined) return;
+    const event = JSON.stringify({
+      type: 'session_info',
+      credits: info.credits,
+      timestamp: Date.now(),
+    });
     await this.transport.emit(conversationId, event);
   }
 

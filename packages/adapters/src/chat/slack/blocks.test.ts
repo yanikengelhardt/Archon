@@ -76,6 +76,29 @@ describe('formatCostFooter', () => {
     expect(formatCostFooter({ stopReason: 'refusal' })).toBe('_stop: refusal_');
   });
 
+  test('shows estimated credits instead of the provider cost', () => {
+    // On a subscription-backed backend the reported cost is ~0, so printing
+    // both would read as a contradiction. Credits win when present.
+    expect(
+      formatCostFooter({
+        model: 'gpt-5.6-luna',
+        cost: 0,
+        tokens: { input: 5000, output: 1200 },
+        credits: 0.1824,
+      })
+    ).toBe('_gpt-5.6-luna · ~0.182 cr · out: 1.2k_');
+  });
+
+  test('falls back to cost when no credits were estimated', () => {
+    expect(
+      formatCostFooter({ model: 'sonnet', cost: 0.1234, tokens: { input: 10, output: 20 } })
+    ).toBe('_sonnet · $0.1234 · out: 20_');
+  });
+
+  test('drops non-finite credits rather than rendering NaN', () => {
+    expect(formatCostFooter({ model: 'm', credits: Number.NaN })).toBe('_m_');
+  });
+
   test('drops non-finite cost', () => {
     expect(formatCostFooter({ cost: Number.NaN })).toBeNull();
     expect(formatCostFooter({ cost: Number.POSITIVE_INFINITY })).toBeNull();

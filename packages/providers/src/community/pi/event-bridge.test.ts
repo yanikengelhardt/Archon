@@ -138,6 +138,41 @@ describe('usageToTokens', () => {
       cost: 0.003,
     });
   });
+
+  test('carries cacheRead/cacheWrite through as disjoint buckets', () => {
+    // Pi's `input` already excludes both, so these must be surfaced rather than
+    // dropped — the credit estimator prices each bucket at its own rate.
+    const usage = {
+      input: 100,
+      output: 50,
+      cacheRead: 4000,
+      cacheWrite: 200,
+      totalTokens: 4350,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    expect(usageToTokens(usage)).toEqual({
+      input: 100,
+      output: 50,
+      cached: 4000,
+      cacheWrite: 200,
+      total: 4350,
+      cost: 0,
+    });
+  });
+
+  test('omits zero cache buckets instead of emitting explicit zeros', () => {
+    const usage = {
+      input: 10,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 15,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    const tokens = usageToTokens(usage);
+    expect('cached' in tokens).toBe(false);
+    expect('cacheWrite' in tokens).toBe(false);
+  });
 });
 
 // ─── buildResultChunk ──────────────────────────────────────────────────────

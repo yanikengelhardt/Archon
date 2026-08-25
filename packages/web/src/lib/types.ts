@@ -94,6 +94,8 @@ export interface SessionInfoEvent extends BaseSSEEvent {
   model?: string;
   stopReason?: string;
   numTurns?: number;
+  /** Estimated spend in credits, priced by the server from configured rates. */
+  credits?: number;
 }
 
 // Conversation lock status
@@ -295,6 +297,7 @@ export interface RunMetaDisplay {
   model?: string;
   stopReason?: string;
   numTurns?: number;
+  credits?: number;
 }
 
 export interface ChatMessage {

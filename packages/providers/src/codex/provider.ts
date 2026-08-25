@@ -331,9 +331,16 @@ function extractUsageFromCodexEvent(event: TurnCompletedEvent): TokenUsage {
     getLog().warn({ eventType: event.type }, 'codex.usage_null_on_turn_completed');
     return { input: 0, output: 0 };
   }
+  // The Codex SDK follows OpenAI's convention: `input_tokens` INCLUDES
+  // `cached_input_tokens`. Archon's TokenUsage.input means fresh input only,
+  // so subtract to keep the buckets disjoint — otherwise cached tokens get
+  // billed at the fresh-input rate on top of the cached rate. Pi's adapter
+  // already normalises the same way; this brings Codex in line with it.
+  const cached = event.usage.cached_input_tokens;
   return {
-    input: event.usage.input_tokens,
+    input: Math.max(0, event.usage.input_tokens - cached),
     output: event.usage.output_tokens,
+    ...(cached > 0 ? { cached } : {}),
   };
 }
 

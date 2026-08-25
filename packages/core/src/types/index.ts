@@ -177,7 +177,14 @@ export interface IPlatformAdapter {
    */
   sendResultFooter?(
     conversationId: string,
-    info: { cost?: number; tokens?: TokenUsage; stopReason?: string; model?: string }
+    info: {
+      cost?: number;
+      tokens?: TokenUsage;
+      stopReason?: string;
+      model?: string;
+      /** Estimated spend in credits, priced from `pricing:` in config. */
+      credits?: number;
+    }
   ): Promise<void>;
 }
 

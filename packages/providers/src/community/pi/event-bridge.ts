@@ -101,11 +101,19 @@ export function serializeToolResult(result: unknown): string {
 /**
  * Extract Archon TokenUsage from Pi's Usage struct.
  * Pi reports input/output/cacheRead/cacheWrite + cost breakdown.
+ *
+ * Pi's `input` is already FRESH input: its OpenAI adapter subtracts both
+ * cached and cache-write tokens from the raw `input_tokens` before reporting.
+ * That matches Archon's `TokenUsage.input` contract exactly, so the three
+ * buckets map across one-to-one and stay disjoint — which is what lets the
+ * credit estimator price each at its own rate.
  */
 export function usageToTokens(usage: Usage): TokenUsage {
   return {
     input: usage.input,
     output: usage.output,
+    ...(usage.cacheRead > 0 ? { cached: usage.cacheRead } : {}),
+    ...(usage.cacheWrite > 0 ? { cacheWrite: usage.cacheWrite } : {}),
     total: usage.totalTokens,
     cost: usage.cost.total,
   };

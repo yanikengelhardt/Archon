@@ -99,15 +99,23 @@ function normalizeClaudeUsage(usage?: {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
 }): TokenUsage | undefined {
   if (!usage) return undefined;
   const input = usage.input_tokens;
   const output = usage.output_tokens;
   if (typeof input !== 'number' || typeof output !== 'number') return undefined;
   const total = usage.total_tokens;
+  // Anthropic already reports cache reads/writes OUTSIDE `input_tokens`, so
+  // unlike the OpenAI-shaped providers there is nothing to subtract here.
+  const cached = usage.cache_read_input_tokens;
+  const cacheWrite = usage.cache_creation_input_tokens;
   return {
     input,
     output,
+    ...(typeof cached === 'number' && cached > 0 ? { cached } : {}),
+    ...(typeof cacheWrite === 'number' && cacheWrite > 0 ? { cacheWrite } : {}),
     ...(typeof total === 'number' ? { total } : {}),
   };
 }
