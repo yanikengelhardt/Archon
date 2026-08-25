@@ -4716,9 +4716,10 @@ describe('message persistence for non-web platforms', () => {
       'conv-db-id',
       'assistant',
       expect.stringContaining('hello back'),
-      // The turn record rides as metadata; empty here since this turn used no
-      // tools and produced no reasoning.
-      {}
+      // The turn record rides as metadata. No tools or reasoning in this turn,
+      // but the model always resolves (falling back to the requested one), so
+      // even a usage-free turn records which model answered.
+      { runMeta: { model: expect.any(String) } }
     );
     expect(mockAddMessage).toHaveBeenCalledTimes(2);
   });
@@ -4743,9 +4744,10 @@ describe('message persistence for non-web platforms', () => {
       'conv-db-id',
       'assistant',
       expect.stringContaining('hello back'),
-      // The turn record rides as metadata; empty here since this turn used no
-      // tools and produced no reasoning.
-      {}
+      // The turn record rides as metadata. No tools or reasoning in this turn,
+      // but the model always resolves (falling back to the requested one), so
+      // even a usage-free turn records which model answered.
+      { runMeta: { model: expect.any(String) } }
     );
     expect(mockAddMessage).toHaveBeenCalledTimes(2);
   });
@@ -4805,9 +4807,10 @@ describe('message persistence for non-web platforms', () => {
       'conv-db-id',
       'assistant',
       expect.stringContaining('hello back'),
-      // The turn record rides as metadata; empty here since this turn used no
-      // tools and produced no reasoning.
-      {}
+      // The turn record rides as metadata. No tools or reasoning in this turn,
+      // but the model always resolves (falling back to the requested one), so
+      // even a usage-free turn records which model answered.
+      { runMeta: { model: expect.any(String) } }
     );
     expect(mockAddMessage).toHaveBeenCalledTimes(2);
   });
@@ -4917,6 +4920,33 @@ describe('message persistence for non-web platforms', () => {
     const metadata = assistantCall[3] as { runMeta?: { model?: string } };
 
     expect(metadata.runMeta?.model).toBe('openai-codex/gpt-5.6-luna');
+  });
+
+  test('falls back to the REQUESTED model when the provider reports none', async () => {
+    // Pi leaves `responseModel` empty on the openai-codex backend, so neither
+    // `model` nor `resolvedModel` arrives. The requested model is then the best
+    // available truth — and without it the Slack chat lane records no model at
+    // all, which silently disables credit estimation (rates are keyed by model).
+    mockSendQuery.mockImplementation(async function* () {
+      yield { type: 'assistant', content: 'hello back' };
+      yield { type: 'result', sessionId: 'sess-1', tokens: { input: 100, output: 20 } };
+    });
+
+    const platform: IPlatformAdapter = {
+      ...makePlatform(),
+      getPlatformType: mock(() => 'slack'),
+      getStreamingMode: mock(() => 'batch' as const),
+    };
+
+    await handleMessage(platform, 'conv-1', 'what is this repo?');
+
+    const assistantCall = mockAddMessage.mock.calls.find(
+      (c: unknown[]) => c[1] === 'assistant'
+    ) as [string, string, string, Record<string, unknown>];
+    const metadata = assistantCall[3] as { runMeta?: { model?: string } };
+
+    expect(typeof metadata.runMeta?.model).toBe('string');
+    expect(metadata.runMeta?.model).not.toBe('');
   });
 
   test('does NOT persist a user row for a deterministic slash command (no orphan)', async () => {

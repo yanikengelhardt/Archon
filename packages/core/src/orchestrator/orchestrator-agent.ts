@@ -2461,12 +2461,16 @@ async function handleStreamMode(
         cost: msg.cost,
         tokens: msg.tokens,
         stopReason: msg.stopReason,
-        // No provider actually populates the flat `model` field — Claude, Pi
-        // and OpenCode all report the concrete model as `resolvedModel.id`.
-        // Reading only `model` left this undefined for every provider, which
-        // is why the footer never named a model and why credit estimation,
-        // which keys rates by model, could never resolve a rate.
-        model: msg.model ?? msg.resolvedModel?.id,
+        // Three tiers, because provider coverage is uneven:
+        //  - `model` is populated by NO provider today.
+        //  - `resolvedModel.id` is the real answer when the provider knows it,
+        //    but Pi leaves `responseModel` empty on the openai-codex backend.
+        //  - the REQUESTED model is then the best available truth: it is what
+        //    Archon asked for and what the operator is billed against.
+        // Without the last fallback the model is undefined for the Pi chat
+        // lane, so the footer names no model and credit estimation — which
+        // keys its rate lookup by model — can never resolve a rate.
+        model: msg.model ?? msg.resolvedModel?.id ?? requestOptions?.model,
       };
     }
   }
@@ -2728,12 +2732,16 @@ async function handleBatchMode(
         cost: msg.cost,
         tokens: msg.tokens,
         stopReason: msg.stopReason,
-        // No provider actually populates the flat `model` field — Claude, Pi
-        // and OpenCode all report the concrete model as `resolvedModel.id`.
-        // Reading only `model` left this undefined for every provider, which
-        // is why the footer never named a model and why credit estimation,
-        // which keys rates by model, could never resolve a rate.
-        model: msg.model ?? msg.resolvedModel?.id,
+        // Three tiers, because provider coverage is uneven:
+        //  - `model` is populated by NO provider today.
+        //  - `resolvedModel.id` is the real answer when the provider knows it,
+        //    but Pi leaves `responseModel` empty on the openai-codex backend.
+        //  - the REQUESTED model is then the best available truth: it is what
+        //    Archon asked for and what the operator is billed against.
+        // Without the last fallback the model is undefined for the Pi chat
+        // lane, so the footer names no model and credit estimation — which
+        // keys its rate lookup by model — can never resolve a rate.
+        model: msg.model ?? msg.resolvedModel?.id ?? requestOptions?.model,
       };
     }
 
